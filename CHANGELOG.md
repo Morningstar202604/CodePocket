@@ -2,6 +2,46 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [1.0.1] — 2026-09-27
+
+### 修复
+
+- **引擎：`__file__` 等模块属性注入**。`PyRun_FileExFlags` 不会像标准运行那样自动设置
+  `__file__/__cached__/__loader__/__spec__`，用户脚本里 `os.path.dirname(__file__)` /
+  `Path(__file__)` 等高频写法会直接 `NameError`（已实测复现）。已在 `pybridge.c` 注入，
+  并重编 `libpybridge.so`（NDK 27.3 + CPython 3.13.9 交叉头文件）。
+- **引擎：并发运行状态机加固**。`execFile` 是阻塞 JNI 调用，协程 cancel 无法中断；
+  原实现提前复位 busy 导致旧脚本未退出时新运行并发执行（sys.path/cwd/argv 互相污染、
+  输出串台）。现 busy/running 只在 execFile 真正返回时复位；Finished 事件幂等去重；
+  `stop()` 增加中断兜底线程（2s 未收尾补发 Finished 130）。
+- **UI：`stopRun` 兜底由 3s 延长到 8s** 并对齐引擎实际状态，避免"UI 已停、进程还在跑"。
+- **UI：运行 .java 文件给出明确提示**（原实现把 Java 源码当 Python 执行，报无意义语法错误）。
+- **构建脚本**：`pkill -9 -f GradleDaemon` 会误杀用户所有项目的 Gradle 进程，改为
+  `gradlew --stop` + 只清理陈旧（>10min）锁文件。
+
+### 变更
+
+- **品牌化**：项目更名为 **CodePocket「口袋码」**，README 全面改版；
+- **文档体系上线**：`docs/BRANDING.md`（品牌方案）、`docs/INTRODUCTION.md`（项目介绍）、
+  `docs/USER_GUIDE.md`（用户手册）、`docs/ARCHITECTURE.md`（技术架构）、
+  `docs/ROADMAP.md`（路线图）、`docs/PROMOTION.md`（宣传文案包）、`docs/FAQ.md`（常见问题）、
+  `CONTRIBUTING.md`、`SECURITY.md` 更新；
+- **README 如实修正**：移除"预装 numpy/pandas/matplotlib"等不实表述，架构描述对齐原生 CPython；
+- 清理 4 处未使用 import。
+
+## [1.0.0] — 2026-09-26
+
+### 新增
+
+- **正式版发布**（versionCode 14），双引擎架构收口：APK 带原生运行时用 NativeEngine，
+  否则回退 Pyodide（过渡期）；UI 对引擎切换透明。
+- 原生引擎核心能力稳定：真文件系统、`input()`/`print()` 桥接（中文不乱码）、
+  死循环可中断、报错行点击跳转、20+ 高频错误人话翻译。
+
+### 变更
+
+- 版本号 1.0.0，包名 `com.devterminal`，minSdk 24 / targetSdk 35。
+
 ## [0.9.2] — 2026-09-25
 
 ### 新增（阶段 1：原生 CPython 引擎落地）

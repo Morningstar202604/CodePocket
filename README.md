@@ -1,36 +1,38 @@
 <div align="center">
 
-# 📱 DevTerminal
+# 📱 CodePocket · 口袋码
 
-**真正离线的安卓 Python IDE — 手机上写代码，装完就能跑**
+**真正离线的安卓 Python IDE — 手机上的现代开发环境，装完就能跑**
 
-原生 Python 运行时（CPython 3.13 交叉编译，含标准库 C 扩展）随 APK 打包，零下载、零网络、零广告。
+原生 Python 运行时（CPython 3.13 交叉编译，含标准库 C 扩展）随 APK 打包，零下载、零网络、零广告、零订阅。
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/Android-8.0%2B-green?style=flat-square)](https://developer.android.com)
 [![Kotlin](https://img.shields.io/badge/Kotlin%202.0%20%2B%20Compose-7F52FF?style=flat-square)](https://kotlinlang.org)
-[![Offline](https://img.shields.io/badge/%E8%BF%90%E8%A1%8C%E6%97%B6-100%25%20%E9%9A%8F%E5%8C%85-orange?style=flat-square)]()
-[![No Ads](https://img.shields.io/badge/%E5%B9%BF%E5%91%8A-0%20%E6%9D%A1-red?style=flat-square)]()
+[![Runtime](https://img.shields.io/badge/%E8%BF%90%E8%A1%8C%E6%97%B6-100%25%20%E9%9A%8F%E5%8C%85-orange?style=flat-square)]()
+[![Ads](https://img.shields.io/badge/%E5%B9%BF%E5%91%8A-0%20%E6%9D%A1-red?style=flat-square)]()
 
 **[下载 APK](https://gitcode.com/badhope/dev-terminal/releases)** · **[官网](https://x33834.github.io/dev-terminal/)** · **[Gitee 镜像](https://gitee.com/badhope/dev-terminal)**
+
+> 把 IDE 装进口袋，离线也能写代码。
 
 </div>
 
 ---
 
-## ✨ 为什么是它
+## ✨ 为什么是 CodePocket
 
-| | Termux | Pydroid 3 | Acode | Spck | **DevTerminal** |
+| | Termux | Pydroid 3 | Acode | Spck | **CodePocket** |
 |---|:---:|:---:|:---:|:---:|:---:|
 | 装完即离线 | ⚠️ 要装包 | ⚠️ 部分 | ❌ 联网 | ❌ 联网 | ✅ **运行时随包** |
 | 现代 IDE 界面 | ❌ 黑框 | ⚠️ 旧 | ✅ | ✅ | ✅ |
 | 多文件 Tab / 查找替换 | ❌ | ✅ | ✅ | ✅ | ✅ |
 | Git 离线集成 | ✅ | ❌ | ✅ | ✅ | ✅ **JGit** |
-| numpy / pandas / matplotlib | ❌ | ✅ | ❌ | ❌ | ⚠️ 未预装（见下） |
+| 原生性能 | ✅ | ✅ | — | — | ✅ **原生 ARM64** |
 | AI 助手（BYOK） | ❌ | ❌ | ✅ 云端 | ✅ 云端 | ✅ **自配端点** |
 | 开源无广告 | ✅ GPL | ❌ 付费 | ⚠️ 广告 | ⚠️ 内购 | ✅ **Apache-2.0** |
 
-> 我们的定位：**开源 + 无广告 + 装完即离线 + 数据科学栈预装**。
+> 我们的定位：**开源 + 无广告 + 装完即离线 + 原生性能**。
 
 ---
 
@@ -81,7 +83,7 @@
 - **多项目切换**（长按删除）· **4 个 Python 模板**
 - **JGit Git 集成**：init / commit / push / pull，纯 Java 离线
 - **SAF 导入导出**（无需存储权限）
-- **离线包管理**：查看内置 wheel / 导入本地 .whl
+- **离线包管理**：查看内置模块 / 导入本地 .whl
 
 ### 看结果
 - **Markdown / HTML 分屏实时预览**，防抖刷新
@@ -97,14 +99,17 @@
 
 ---
 
-## 🚀 构建
+## 🚀 快速开始
 
 ```bash
-# 前置：JDK 17+，Android SDK（platforms;android-35、build-tools;34.0.0）
-# 本地生成 local.properties：sdk.dir=/path/to/android-sdk
-# clone 后即可出包
+# 1) 前置：JDK 17+、Android SDK（platforms;android-35、build-tools;34.0.0）
+#    本地生成 local.properties：sdk.dir=/path/to/android-sdk
+
+# 2) clone 后直接出包
 ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+# 3) 手机上打开 App → 新建项目 → 写代码 → 点 ▶ 运行
 ```
 
 原生运行时（`libpython3.13.so` + C 扩展 + 纯 Python 标准库 zip，约 100MB）已随仓库提供，构建完成后 **App 运行零网络**。
@@ -123,6 +128,23 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ---
 
+## 📚 文档
+
+| 文档 | 说明 |
+|---|---|
+| [品牌方案](docs/BRANDING.md) | 命名、定位、口号、视觉建议 |
+| [项目介绍](docs/INTRODUCTION.md) | 一页式介绍，适合官网/宣传 |
+| [用户手册](docs/USER_GUIDE.md) | 安装、界面、运行、Git、AI 完整说明 |
+| [技术架构](docs/ARCHITECTURE.md) | 引擎、JNI 桥、线程模型、目录结构 |
+| [路线图](docs/ROADMAP.md) | 已实现 / 进行中 / 规划 |
+| [宣传文案包](docs/PROMOTION.md) | 商店描述、发布公告、社媒文案，复制即用 |
+| [常见问题](docs/FAQ.md) | FAQ |
+| [贡献指南](CONTRIBUTING.md) | 如何参与开发 |
+| [行为准则](CODE_OF_CONDUCT.md) | Contributor Covenant |
+| [安全政策](SECURITY.md) | 漏洞上报流程 |
+
+---
+
 ## 🧭 能力边界（诚实标注）
 
 | 能力 | 状态 |
@@ -135,8 +157,18 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ---
 
+## 🤝 贡献
+
+欢迎一切形式的贡献：提交 Issue、改进文档、修 bug、加功能。
+
+贡献前跑 `python3 tools/selfcheck.py`（0 错误再提交），详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+---
+
 ## 📄 许可证
 
 [Apache License 2.0](LICENSE) · 第三方组件声明见 [NOTICE.md](NOTICE.md)
 
-贡献前跑 `python3 tools/selfcheck.py`（0 错误再提交）。
+---
+
+*CodePocket「口袋码」——把 IDE 装进口袋，离线也能写代码。*

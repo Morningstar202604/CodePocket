@@ -1,7 +1,6 @@
 package com.devterminal.engine
 
 import android.content.Context
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -48,6 +47,15 @@ class NativeEngine(private val context: Context) : RunEngine {
 
     /** 事件出口：C 回调 → Flow（同一时刻只有一个运行） */
     private val sink = AtomicReference<((RunEvent) -> Unit)?>(null)
+
+    /**
+     * 单次运行的 Finished 幂等标记：看门狗超时、stop 兜底、execFile 正常返回
+     * 三路都可能触发收尾，只有第一个生效。run 开始前复位。
+     */
+    private val finishedSent = AtomicBoolean(false)
+
+    /** execFile 是否仍在执行（stop 兜底线程据此判断脚本是否已收尾） */
+    private val execActive = AtomicBoolean(false)
 
     // ==================== 初始化 ====================
 
@@ -183,6 +191,7 @@ class NativeEngine(private val context: Context) : RunEngine {
         val started = System.currentTimeMillis()
         startedAt = started
         running = true
+        finishedSent.set(false)
         bridge.clearPendingInput()
         bridge.resetBuffers()
 
@@ -191,28 +200,47 @@ class NativeEngine(private val context: Context) : RunEngine {
                          else script.parentFile?.absolutePath ?: "/"
         val scriptDir = script.parentFile?.absolutePath ?: ""
 
-        // 事件出口（C 回调线程 → Flow）
-        sink.set { ev ->
-            trySend(ev)
-            if (ev is RunEvent.Finished) {
+        // 事件出口（C 回调线程 → Flow）。注意这里只做转发；
+        // busy/running 的复位统一交给 exec 线程的 finally 收尾（见下）。
+        sink.set { ev -> trySend(ev) }
+
+        /**
+         * Finished 只发一次：看门狗超时补发、stop 兜底与 execFile 正常返回都可能触发，
+         * 不幂等的话 UI 会收到多条"进程结束"。
+         */
+        fun sendFinished(exitCode: Int, startedAt: Long) {
+            if (finishedSent.compareAndSet(false, true)) {
+                trySend(RunEvent.Finished(exitCode, System.currentTimeMillis() - startedAt))
+            }
+        }
+
+        execActive.set(true)
+        val job = launch(Dispatchers.IO) {
+            try {
+                // 跑在专用线程，Py_Initialize 已在 initialize() 完成（持 GIL 语义由 C 层管理）
+                // P1-2：把命令行参数透传到 sys.argv[1:]
+                val err = bridge.execFile(script.absolutePath, workingDir, scriptDir, request.args.toTypedArray())
+                // P2-1：无尾换行的最后一行残留在此 flush
+                bridge.flushBuffers()
+                if (err != null) {
+                    sink.get()?.invoke(RunEvent.Stderr(err))
+                    sendFinished(1, started)
+                } else {
+                    sendFinished(0, started)
+                }
+            } finally {
+                /**
+                 * P4-2：只有 execFile 真正返回才复位 busy/running 并清 sink。
+                 * execFile 是阻塞 JNI 调用，协程 cancel 无法中断它；若在 Finished
+                 * 事件或 awaitClose 里提前复位 busy，旧线程仍在跑时用户点「运行」
+                 * 会启动第二个脚本——两个 Python 执行在同一解释器里排队交错，
+                 * sys.path/cwd/argv 互相污染，输出串台。串行约束必须等旧线程落地。
+                 */
+                execActive.set(false)
                 sink.set(null)
                 busy.set(false)
                 running = false
                 close()
-            }
-        }
-
-        val job = launch(Dispatchers.IO) {
-            // 跑在专用线程，Py_Initialize 已在 initialize() 完成（持 GIL 语义由 C 层管理）
-            // P1-2：把命令行参数透传到 sys.argv[1:]
-            val err = bridge.execFile(script.absolutePath, workingDir, scriptDir, request.args.toTypedArray())
-            // P2-1：无尾换行的最后一行残留在此 flush
-            bridge.flushBuffers()
-            if (err != null) {
-                sink.get()?.invoke(RunEvent.Stderr(err))
-                sink.get()?.invoke(RunEvent.Finished(1, System.currentTimeMillis() - started))
-            } else {
-                sink.get()?.invoke(RunEvent.Finished(0, System.currentTimeMillis() - started))
             }
         }
 
@@ -229,28 +257,38 @@ class NativeEngine(private val context: Context) : RunEngine {
                 if (running) {
                     android.util.Log.w("NativeEngine", "脚本未响应中断，超时强制收尾")
                     sink.get()?.invoke(RunEvent.Stderr("警告：脚本未响应中断，可能仍在后台运行。"))
-                    running = false
-                    sink.get()?.invoke(RunEvent.Finished(130, System.currentTimeMillis() - started))
+                    sendFinished(130, started)
                 }
             }
         }
 
         awaitClose {
-            job.cancel()
+            // 不能 job.cancel()：execFile 是阻塞 JNI 调用，取消只会让 Finish 事件
+            // 静默丢失；也不能提前清 sink / 复位 busy——由 job.finally 统一收尾，
+            // 保证"上一个脚本真正结束"之前不允许下一个运行开始。
             watchdog.cancel()
-            sink.set(null)
-            busy.set(false)
-            running = false
         }
     }.flowOn(Dispatchers.Default)
 
     override fun stop() {
-        running = false
+        // P4-2：不再把 running 置 false 就完事——running 的复位统一交给
+        // execFile 的 finally，保证"旧脚本真正结束前" busy 不会被释放。
+        // 这里只发中断信号。
         // P0-2：必须先 pushEof——若脚本正阻塞在 input()（JNI 调用上，GIL 被攥死），
         // EOFError 让 input() 立即返回；之后再 requestInterrupt 处理纯 CPU 死循环。
         // 顺序反了会在 requestInterrupt 拿 GIL 时永久死锁，pushEof 永远执行不到。
         bridge.pushEof()
         runCatching { bridge.requestInterrupt() }
+        // P4-2 兜底：中断 2s 后 execFile 仍未返回（脚本不响应 KeyboardInterrupt，
+        // 如阻塞在不可中断的 C 扩展调用），补发 Finished(130) 让 UI 收尾。
+        // busy 仍由 execFile 的 finally 复位，杜绝并发运行。
+        Thread {
+            Thread.sleep(2_000L)
+            if (execActive.get() && finishedSent.compareAndSet(false, true)) {
+                android.util.Log.w("NativeEngine", "停止后脚本未响应中断，补发收尾事件")
+                sink.get()?.invoke(RunEvent.Finished(130, System.currentTimeMillis() - startedAt))
+            }
+        }.apply { isDaemon = true }.start()
     }
 
     override fun writeStdin(line: String): Boolean {

@@ -61,7 +61,6 @@ import com.devterminal.ui.components.StatusDot
 import com.devterminal.ui.theme.Dimens
 import com.devterminal.ui.theme.muted
 import com.devterminal.ui.theme.success
-import com.devterminal.ui.theme.warning
 
 /**
  * 从一行输出里解析出「文件:行号」中的行号，解析不到返回 null。

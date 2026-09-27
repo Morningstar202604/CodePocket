@@ -394,6 +394,22 @@ Java_com_devterminal_engine_NativeBridge_execFile(
             PyDict_SetItemString(globals, "__builtins__", builtins);
             Py_DECREF(builtins);
 
+            /* P4-1：对齐 CPython 标准运行环境，注入模块元属性。
+             * PyRun_FileExFlags 不会像 PyRun_SimpleFileObject 那样自动设置
+             * __file__/__cached__/__loader__/__spec__——缺 __file__ 时，用户脚本里
+             * os.path.dirname(__file__) / Path(__file__) 等高频写法会抛
+             * NameError: name '__file__' is not defined，导致脚本"跑不起来"。 */
+            {
+                PyObject *fileAttr = PyUnicode_FromString(p);
+                if (fileAttr) {
+                    PyDict_SetItemString(globals, "__file__", fileAttr);
+                    Py_DECREF(fileAttr);
+                }
+                PyDict_SetItemString(globals, "__cached__", Py_None);
+                PyDict_SetItemString(globals, "__loader__", Py_None);
+                PyDict_SetItemString(globals, "__spec__", Py_None);
+            }
+
             /* P1-2/P2-5: 切工作目录；脚本目录先去重再 insert（避免跨脚本 import 串扰） */
             {
                 char pre[PATH_MAX * 3];

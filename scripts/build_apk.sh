@@ -24,10 +24,15 @@ cd "$ROOT"
 
 for attempt in 1 2 3; do
   echo "===== build attempt $attempt ====="
-  pkill -9 -f "GradleDaemon" 2>/dev/null
-  pkill -9 -f "KotlinCompileDaemon" 2>/dev/null
+  # P4-2：用 gradlew --stop 优雅停止本 Gradle 版本的 daemon，替代 pkill -9。
+  # pkill -9 -f "GradleDaemon" 会杀掉机器上所有 Gradle 项目的构建进程，
+  # 用户在别的项目里正跑着的构建也会被误杀；--stop 只停本 wrapper 版本，
+  # 且由 Gradle 自身完成状态落盘，更安全。
+  ./gradlew --stop >/dev/null 2>&1 || true
   sleep 1
-  find "$GRADLE_HOME" -name "*.lock" -delete 2>/dev/null
+  # 只清理超过 10 分钟的陈旧锁文件：正在使用的锁 mtime 很新，
+  # -mmin +10 能避开其他项目正在进行中的构建。
+  find "$GRADLE_HOME" -name "*.lock" -mmin +10 -delete 2>/dev/null
   rm -rf "$GRADLE_HOME"/caches/8.11.1/fileHashes \
          "$GRADLE_HOME"/caches/8.11.1/file-changes \
          "$GRADLE_HOME"/caches/8.11.1/executions \

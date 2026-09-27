@@ -428,6 +428,16 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val language = inferLanguage(file)
+        // P4-2：Java 运行能力未开放——原生引擎只实现了 CPython。
+        // 直接把 .java 源码交给 execFile 会被 Python 解释器当 Python 解析，
+        // 报一堆与用户代码无关的语法错误，体验极差。
+        if (language == Language.JAVA) {
+            _ui.update { it.copy(
+                message = "Java 运行暂未开放（当前仅支持编辑与语法高亮）",
+                messageSeq = it.messageSeq + 1
+            ) }
+            return
+        }
         val projectDir = currentProject ?: file.parentFile ?: file
         _ui.update { it.copy(
             running = true, output = emptyList(), exitCode = null,
@@ -550,16 +560,23 @@ class EditorViewModel(app: Application) : AndroidViewModel(app) {
             _ui.update {
                 it.copy(message = "正在停止…", messageSeq = it.messageSeq + 1)
             }
-            // 兜底：引擎看门狗若未在 3s 内发出 Finished，UI 强制翻回可运行态，
+            // 兜底：引擎看门狗若未在 8s 内发出 Finished，UI 强制翻回可运行态，
             // 避免按钮永远卡在「停止」态。正常路径由引擎 Finished 事件收尾。
-            kotlinx.coroutines.delay(3000L)
+            // P4-2：8s 而非 3s——中断本身要给 2s 生效时间，脚本清理还需余量；
+            // 且引擎 busy 只在 execFile 真正返回后才复位，UI 过早翻转只会让
+            // 用户点「运行」时得到"已有程序在运行中"。
+            kotlinx.coroutines.delay(8_000L)
             if (_ui.value.running) {
                 _ui.update {
                     it.copy(
                         running = false,
                         inputVisible = false,
                         exitCode = it.exitCode ?: -1,
-                        output = appendLines(it.output, "[DevTerminal] 引擎未响应，已强制停止。")
+                        output = appendLines(
+                            it.output,
+                            "[DevTerminal] 引擎未响应停止，界面已强制复位。" +
+                                "若再次运行提示\"已有程序在运行中\"，说明旧进程仍在收尾，请稍候重试。"
+                        )
                     )
                 }
                 runCatching { ExecutionService.stop(context) }

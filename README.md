@@ -36,6 +36,24 @@ A natively cross-compiled CPython 3.13 (with C-extension stdlib modules) is bund
 
 ---
 
+## 📸 Screenshots & Demo
+
+| Onboarding | Running | Output |
+|---|---|---|
+| ![Onboarding](design/screenshots/01-onboarding.png) | ![Running](design/screenshots/03-running.png) | ![Output](design/screenshots/04-output-done.png) |
+
+| Git | AI Assistant | Command Palette |
+|---|---|---|
+| ![Git](design/screenshots/10-git.png) | ![AI](design/screenshots/11-ai.png) | ![Command Palette](design/screenshots/12-command-palette.png) |
+
+### Demo Video
+
+<video src="design/promo.mp4" controls></video>
+
+[▶ Download demo video](design/promo.mp4) · 24s · 0.6MB · no audio
+
+---
+
 ## 🏗 Architecture
 
 ```

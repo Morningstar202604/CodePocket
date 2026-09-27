@@ -69,4 +69,4 @@ A：`tools/test_suite.py` 驱动的是早期 Web 原型（Pyodide 时代遗留�
 
 ---
 
-*没找到答案？去 [Issue 区](https://gitcode.com/badhope/dev-terminal/issues) 提问，或加入讨论。*
+*没找到答案？去 [Issue 区](https://gitcode.com/badhope/CodePocket/issues) 提问，或加入讨论。*

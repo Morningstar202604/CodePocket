@@ -8,7 +8,7 @@
 
 | 你想做什么 | 怎么做 |
 |---|---|
-| 反馈 bug / 提建议 | 开 [Issue](https://gitcode.com/badhope/dev-terminal/issues)，写清现象、步骤、期望 |
+| 反馈 bug / 提建议 | 开 [Issue](https://gitcode.com/badhope/CodePocket/issues)，写清现象、步骤、期望 |
 | 改文档 | 直接提 PR，改动要小而清晰 |
 | 修 bug / 加功能 | 先开 Issue 说明方案 → 认领 → 开发 → PR |
 | 只想围观 | 点 Star、参与讨论，都是支持 |
@@ -23,8 +23,8 @@
 #   Android SDK：platforms;android-35、build-tools;34.0.0
 #   local.properties：sdk.dir=/path/to/android-sdk
 
-git clone https://gitcode.com/badhope/dev-terminal.git
-cd dev-terminal
+git clone https://gitcode.com/badhope/CodePocket.git
+cd CodePocket
 ./gradlew assembleDebug
 ```
 

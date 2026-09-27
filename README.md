@@ -12,7 +12,7 @@
 [![Runtime](https://img.shields.io/badge/%E8%BF%90%E8%A1%8C%E6%97%B6-100%25%20%E9%9A%8F%E5%8C%85-orange?style=flat-square)]()
 [![Ads](https://img.shields.io/badge/%E5%B9%BF%E5%91%8A-0%20%E6%9D%A1-red?style=flat-square)]()
 
-**[下载 APK](https://gitcode.com/badhope/dev-terminal/releases)** · **[官网](https://x33834.github.io/dev-terminal/)** · **[Gitee 镜像](https://gitee.com/badhope/dev-terminal)**
+**[下载 APK](https://gitcode.com/badhope/CodePocket/releases)** · **[官网](https://x33834.github.io/CodePocket/)** · **[Gitee 镜像](https://gitee.com/badhope/CodePocket)**
 
 > 把 IDE 装进口袋，离线也能写代码。
 

@@ -6,7 +6,7 @@
 
 ## 1. 安装
 
-1. 从 [Releases](https://gitcode.com/badhope/dev-terminal/releases) 下载 `app-debug.apk`（约 124MB）；
+1. 从 [Releases](https://gitcode.com/badhope/CodePocket/releases) 下载 `app-debug.apk`（约 124MB）；
 2. 手机允许"安装未知来源应用"（不同厂商路径不同，一般在 设置 → 安全 → 未知来源）；
 3. 安装后打开，首次运行会自动解压内置 Python 标准库（约 1~5 秒，之后秒开）。
 

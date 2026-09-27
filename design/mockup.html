@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DevTerminal · 高保真原型</title>
+<title>CodePocket · 高保真原型</title>
 <style>
 :root{
   /* ---- Quiet 设计语言（REFACTOR_SPEC 1.1 色彩系统，深色冷黑） ---- */
@@ -1105,7 +1105,7 @@ pre.code .ln.hi{ background: rgba(99,102,241,.09); box-shadow: inset 2px 0 0 var
         <div style="padding:6px 10px; font-size:11px; color:var(--text-faint)" id="gitCount">3 个变更</div>
         <div class="git-file"><b>M</b>main.py</div>
         <div class="git-file" id="gitFile2"><b>A</b>utils.py</div>
-        <div class="git-file"><b>??</b>.devterminal</div>
+        <div class="git-file"><b>??</b>.codepocket</div>
         <input class="git-msg" id="gitMsg" placeholder="提交信息…">
         <button class="btn-primary" id="btnGitCommit">提交全部变更</button>
         <div style="display:flex; gap:6px; margin-top:8px">
@@ -1333,7 +1333,7 @@ const FILES = {
   "lab_key": {
     name: "keyerr.py", lang: "python", real: true,
     code: [
-      'user = {"name": "DevTerminal", "lang": "Python"}',
+      'user = {"name": "CodePocket", "lang": "Python"}',
       'print("年龄:", user["age"])   # 键不存在 -> KeyError',
       'print("OK")'
     ].join("\n")
@@ -1353,7 +1353,7 @@ const FILES = {
     code: [
       "from mymath import divide, greet",
       "",
-      'print(greet("DevTerminal"))',
+      'print(greet("CodePocket"))',
       'print("10 / 0 =", divide(10, 0))'
     ].join("\n")
   },
@@ -1361,7 +1361,7 @@ const FILES = {
     name: "long_out.py", lang: "python", real: true,
     code: [
       "for i in range(5000):",
-      '    print(f"{i:04d}: DevTerminal 离线运行 {i * i}")',
+      '    print(f"{i:04d}: CodePocket 离线运行 {i * i}")',
       'print("-- 共输出 5000 行 --")'
     ].join("\n")
   },
@@ -1378,7 +1378,7 @@ const FILES = {
     name: "fileio.py", lang: "python", real: true,
     code: [
       'with open("note.txt", "w", encoding="utf-8") as f:',
-      '    f.write("DevTerminal 离线文件 IO 测试\\n")',
+      '    f.write("CodePocket 离线文件 IO 测试\\n")',
       'with open("note.txt", encoding="utf-8") as f:',
       '    print("读到:", f.read().strip())'
     ].join("\n")
@@ -1430,7 +1430,7 @@ const FILES = {
       'plt.figure(figsize=(6, 3.4))',
       'plt.plot(x, y, color="#5a82ff", linewidth=2.4, label="sin(x)·e^(−x/6)")',
       'plt.fill_between(x, y, alpha=0.18, color="#5a82ff")',
-      'plt.title("DevTerminal offline plot: sin(x) * e^(-x/6)")',
+      'plt.title("CodePocket offline plot: sin(x) * e^(-x/6)")',
       'plt.xlabel("x"); plt.ylabel("y")',
       "plt.grid(alpha=0.25); plt.legend()",
       'plt.show()   # 离线渲染为图片，直接显示在终端'
@@ -2168,7 +2168,7 @@ function startPyRun(p){
 function realRun(p){
   running = true; setRunning(true); setBadge("running", "运行中");
   clearOutput(); killTimers();
-  appendLine("sys", "$ devterminal run " + p.mainFile);
+  appendLine("sys", "$ codepocket run " + p.mainFile);
   appendLine("hint", "正在启动离线解释器…（首次约需十几秒加载）");
   _pyCurrent = { to: null };
   // 若上一个 worker 被看门狗终止（如死循环题），需重建解释器，否则后续题目会卡在「等待就绪」
@@ -2212,7 +2212,7 @@ function run(){
   removePendingCaret();
   lockInput("正在运行…");
 
-  appendLine("sys", "$ devterminal run " + f.name);
+  appendLine("sys", "$ codepocket run " + f.name);
   appendLine("hint", "正在启动离线解释器…");
 
   later(function(){
@@ -2443,7 +2443,7 @@ getPyWorker();
   }
 
   const MD_SAMPLE = [
-    "# DevTerminal · 离线终端",
+    "# CodePocket · 离线终端",
     "",
     "**真正的离线** Python / Java 运行环境，装完即用，不依赖外网。",
     "",

@@ -8,7 +8,7 @@ import os, subprocess, sys
 from playwright.sync_api import sync_playwright
 
 CHROME = "/opt/vm/preinstall/ms-playwright/chromium-1169/chrome-linux/chrome"
-URL = "file:///home/user/Doubao/chats/38444027447280130/dev-terminal/design/mockup.html"
+URL = "file:///home/user/Doubao/chats/38444434732973826/dev-terminal/design/mockup.html"
 FPS = 24
 OUT_DIR = sys.argv[1] if len(sys.argv) > 1 else "/tmp/video_frames"
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -104,7 +104,7 @@ with sync_playwright() as p:
     b.close()
 
 # ---- ffmpeg 合成 ----
-mp4 = "/home/user/Doubao/chats/38444027447280130/dev-terminal/design/promo.mp4"
+mp4 = "/home/user/Doubao/chats/38444434732973826/dev-terminal/design/promo.mp4"
 cmd = ["ffmpeg", "-y", "-framerate", str(FPS), "-i", f"{OUT_DIR}/f%04d.png",
        "-c:v", "libx264", "-preset", "medium", "-crf", "20",
        "-pix_fmt", "yuv420p", "-movflags", "+faststart", mp4]

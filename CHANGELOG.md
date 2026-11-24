@@ -2,6 +2,151 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.0.27] — 2026-11-24
+
+### 新增
+
+- **跨文件 Python 定义跳转**：命令面板新增「跳转到定义」，读取光标下的标识符，在项目内扫描 `.py` 文件的 `class` / `def` / 模块级变量定义，列出文件、行号与签名，点选后直接打开对应文件并定位到行。
+- **import 优先排序**：`from utils import helper` / `import pkg.utils` 会优先匹配对应模块文件；同名符号仍全部列出，不替用户猜。
+- **定义索引导航**：新增 `DefinitionDialog`，与符号大纲共用同一套离线、零进程的交互；索引上限 300 个 `.py`、单文件 512KB，避免手机端卡顿。
+
+### 边界
+
+- 这不是 LSP：不做类型推断、继承解析、跨文件引用重命名或后台语言服务器；只做稳定的文本级定义定位。
+- 当前只支持 Python。Kotlin / Java / JS / TS / Lua 仍使用原有当前文件符号大纲。
+
+### 构建
+
+- `versionCode 27` / `versionName 0.0.27`。
+- 单元测试 129 个通过（新增 5 个定义索引测试）。
+- release APK 约 31MB，SHA-256 `59053f190d5ddbca64e2770da44583bb69d155141a7c136c754348ec6bcc097e`；debug APK 约 49MB，SHA-256 `3e9a61ef7f158cb5de519240d5bd8d39d0ea905e194f88f0cf242a4c4978f31b`。
+- lint Release 38 个 issue（36 Warning + 2 Information），Fatal 0 / Error 0。
+- x86_64 模拟器未在本轮重跑；0.0.26 的安装、Python 运行、自检、终端结果仍有效。0.0.27 新增的是离线文本索引与 UI，不改变原生运行时。
+
+## [0.0.26] — 2026-11-24
+
+### 新增
+
+- **正式签名**：release 构建使用独立 RSA-4096 证书（`CN=CodePocket`），签名配置从根目录 `keystore.properties` 读取；密钥与密码不入库，仓库只保留 `keystore.properties.example`。新证书与旧 debug 签名不兼容，旧版需卸载重装。
+- **x86_64 支持**：新增 x86_64 CPython 3.13 交叉编译产物、`libpybridge.so`、53 个 C 扩展与 OpenSSL/sqlite 依赖；`abiFilters` 同时打 `arm64-v8a` 与 `x86_64`，`NativeEngine` 按 `Build.SUPPORTED_ABIS` 选择对应目录。APK 可在 x86_64 模拟器/ChromeOS 上运行。
+- **终端面板**：编辑器内新增命令终端，保留项目内 cwd，支持 `cd`/`pwd`、20 秒超时、6000 字符输出上限；从命令面板与编辑器工具栏均可打开。它是非交互式命令会话，不是 PTY，vim/top 等全屏程序不可用。
+- **只读子 Agent**：新增 `delegate_task` 工具，把“先读多个文件再汇总”的独立探索交给隔离子上下文；子 Agent 只挂 `read_file` / `list_files` / `search_text`，不能写文件或执行命令。
+- **离线语义索引**：新增 `semantic_search` 工具，按 TF-IDF + 余弦相似度对项目分块检索，返回路径、行号与相关度；不下载 embedding 模型，完全离线。
+
+### 修复
+
+- **x86_64 自检误报**：`EnvDiagnostics` 与 `EngineProvider` 的架构门槛原本硬编码 arm64-v8a，x86_64 会被拒绝；改为识别 `arm64-v8a` / `x86_64` 两种原生 ABI。
+- **标准库解压校验死锁**：`stdlibOk()` 要求 `.unpacked_ok` 标记，但标记只在校验通过后创建，形成“永远校验失败”的循环。拆成 `hasStdlibFiles()` 与 `stdlibOk()`，校验通过后再落标记。
+- **x86_64 C 扩展名硬编码**：`ensureExtensions()` 只查 `math.cpython-313-aarch64-linux-android.so`；按 ABI 生成 `aarch64-linux-android` / `x86_64-linux-android` 后缀。
+
+### 构建
+
+- `versionCode 26` / `versionName 0.0.26`。
+- 双 ABI release APK 约 31MB，SHA-256 `b11c30d917039e0083bc2f074524d9d1b7f7e06e929cccbb1203bb2f318b1de0`；debug APK 约 49MB，SHA-256 `e6921861db0e73f1f81822208624f48332aa0a1aa9a2b7a92148d52521f699f0`。
+- 签名证书 SHA-256 `1b02135746d1426d7beda47e706fdb2c77a7145ea41e0f7e14addb191b87fac5`（`CN=CodePocket`，RSA-4096）。
+- 单元测试 124 个通过（含终端、语义索引、只读子 Agent）。
+- x86_64 模拟器实测：安装、启动、Python `main.py` 运行退出码 0、自检 12 项全绿、终端 `pwd` 返回项目目录。
+
+## [0.0.25] — 2026-11-23
+
+### 新增
+
+- **Agent 计划模式**：先输出 `Plan` 步骤并等待用户批准，再进入工具执行；Agent 面板与设置页均可开关，默认关闭以兼容小模型。
+- **跨轮对话**：同一 Agent 会话保留上一轮目标与结论，新增「新会话」入口；项目规则兼容 `CLAUDE.md`、`.cursorrules`、`.windsurfrules`、`.github/copilot-instructions.md`。
+- **上下文 token 预算**：`ContextBuilder` 增加粗略 token 估算、系统提示/历史消息双重裁剪，Agent 面板显示约多少 tokens；本地模型按 2048 token 预算收紧。
+- **多 Provider 预设**：设置页内置 DeepSeek、硅基流动、智谱、月之暗面、本机 Ollama 的端点与模型名，密钥仍由用户填写。
+- **网络重试**：AI 助手与 Agent 的 429/5xx 请求自动退避重试，支持 `Retry-After`。
+- **AI 助手会话持久化**：对话落到应用私有目录，重启恢复最近 40 条，新增「新对话」。
+- **MCP resources / prompts**：除 tools 外桥接资源列表、资源读取、prompt 列表与 prompt 获取。
+- **终端命令工具**：Agent 可在项目根目录执行非交互式 `sh` 命令，超时/输出截断，执行前仍需审批。
+- 系统提示要求改完代码调用 `run_tests`，没有测试时至少 `run_file` 验证入口。
+
+### 构建
+
+- `versionCode 25` / `versionName 0.0.25`。
+
+## [0.0.24] — 2026-11-23
+
+### 修复
+
+- **Python 子线程 input() 的 JNI 野指针**：`bridge_input` 在 `AttachCurrentThread` 后先 `DetachCurrentThread`，随后继续用已失效的 `JNIEnv` 调用 `GetStringUTFChars` / `DeleteLocalRef`。在 Python 自建线程里调用 `input()` 会触发 native 崩溃。0.0.24 改为先取字符串、删局部引用，最后再 Detach。
+- 重新编译并剥离 `libpybridge.so` / `libpython3.13.so`，APK 内 C 扩展仍为 53 个。
+
+### 构建
+
+- `versionCode 24` / `versionName 0.0.24`。
+
+## [0.0.23] — 2026-11-23
+
+### 修复
+
+- **C 扩展仍然缺失（0.0.22 未覆盖的真根因）**：Android PackageManager 只解压 `lib<name>.so`；`math.cpython-313-...so`、`_ssl...so` 等 Python 扩展不带 `lib` 前缀，安装后不会出现在 `nativeLibraryDir`。0.0.23 在首次启动时从 APK 的 `lib/arm64-v8a` 把 53 个 C 扩展抽到 `python-stdlib/lib/python3.13/lib-dynload`，CPython 从默认 `lib-dynload` 路径加载；`libpython3.13.so`、`libpybridge.so`、`libssl_python.so` 等仍由系统解压到 `nativeLibraryDir`。
+- **首次启动自检误报**：环境准备阶段先完成标准库解压与 C 扩展抽取，再进入主界面，避免用户一进来点自检就看到“C 扩展缺失”的假红。
+- **JNI 初始化阶段的野指针**：`libpybridge` 先 `ReleaseStringUTFChars(stdlibPath)`，随后又用已释放的 `sp` 拼 `lib-dynload/site-packages` 路径；在部分设备上会直接触发 native 崩溃（表现为一运行就退出）。0.0.23 把释放移到路径注入之后。
+- **加密设置损坏导致启动崩溃**：`EncryptedSharedPreferences` 读取失败（Keystore key 失效 / 文件损坏）时回退默认值并标记 `encryptionFallback`，不再在 ViewModel 构造期抛异常。
+- **引导返回键**：从新手引导按系统返回键也会记为已看过，避免每次启动重复弹。
+
+### 构建
+
+- `versionCode 23` / `versionName 0.0.23`。
+
+## [0.0.22] — 2026-11-23
+
+### 修复
+
+- **原生库未解压导致运行闪退 / 自检误报**：`useLegacyPackaging=false` 时 `/lib/arm64` 下没有 `libpython3.13.so`、`libpybridge.so` 和 C 扩展，CPython 无法初始化。改为 `useLegacyPackaging=true` + `extractNativeLibs=true`，安装时把原生库解压到 `nativeLibraryDir`。
+- **自检诊断更可操作**：工具链缺失时直接给出「重新检测 / 查看使用指南 / 重装最新 APK」路径，不再只罗列缺失文件。
+
+### 新增
+
+- **首次启动新手引导**：说明 CodePocket 是什么、三步开始、界面入口、运行闪退排查。
+- **指南入口**：抽屉「指南」、命令面板「使用指南」、自检失败页均可再次打开。
+
+### 构建
+
+- `versionCode 22` / `versionName 0.0.22`。
+
+## [0.0.21] — 2026-11-23
+
+### 新增
+
+- **MCP 工具**：Streamable HTTP / SSE data 响应；initialize → tools/list → tools/call，
+  只读工具自动执行，带副作用工具仍走审批。
+- **命令面板自定义命令**：`.codepocket/commands` 下的 Markdown 直接填入 Agent。
+- **项目 JS 插件**：`.codepocket/plugins` 下的 `run(input)` 在 Rhino 沙箱执行，
+  禁止 Java/文件/网络访问，默认关闭。
+- **下载前台服务**：复用现有 ExecutionService，按 tag 引用计数，退后台不被杀。
+- **Qwen3.5-2B 本地模型**：ModelCatalog 增加 Qwen3.5-2B Q4_K_M（约 1.28GB，ModelScope 国内源），作为 MiniCPM5 之外的 2B 级备选。
+
+### 构建
+
+- `versionCode 21` / `versionName 0.0.21`。
+
+## [0.0.20] — 2026-11-23
+
+### 新增
+
+- **Agent 历史会话**：Agent 面板新增「历史会话」入口，列出最近 20 个会话的任务、
+  时间、事件数与完成状态；可回放完整工具轨迹，也可单独删除。会话文件保留最近 30 个。
+- **完整 .part 恢复**：进程在“下载完成、改名之前”被杀后，下次启动直接校验完整 `.part`，
+  不再用 Range 请求撞 HTTP 416。
+- **下载取消真生效**：每个读写循环检查协程取消，暂停不再等到整段下载结束；
+  下载中禁止删除，避免 `.part` 与删除竞态。
+- **本地模型校验态**：下载完成后单独显示「校验中…」，不再显示 100% 卡住。
+- **NOTICE**：补充 llama.cpp（MIT）与 MiniCPM5 模型权重（Apache-2.0）声明。
+
+### 修复
+
+- 下载空间检查在 `usableSpace=0` 时不再绕过。
+- 历史会话打开时清空上一会话的检查点，避免撤销按钮指向错误快照。
+- Agent 事件 JSONL 落盘移到 IO 线程，避免主线程写文件。
+- 会话 ID 改用 UUID 后缀，避免同一毫秒内碰撞。
+- 会话只在工作区/Provider 校验通过后创建，避免留下空会话。
+
+### 构建
+
+- `versionCode 20` / `versionName 0.0.20`。
+
 ## [1.0.1] — 2026-09-27
 
 ### 修复

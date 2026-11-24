@@ -13,11 +13,14 @@
  * 3. 解释器在专用线程里跑（Py_Initialize 必须在持 GIL 的线程完成）；
  *    Kotlin 侧通过 JNI 调用时用 PyGILState_Ensure/Release 临时拿 GIL。
  *
- * 运行时约束：libpython3.13.so、libpybridge.so 以及全部 C 扩展（lib-dynload）
- * 与依赖库（libssl_python.so / libcrypto_python.so / libsqlite3_python.so）
- * 都放 jniLibs/arm64-v8a，由 Android linker 自动解析。安装后这些 .so 落在
- * nativeLibraryDir，初始化时把该目录 insert 进 sys.path，CPython 即可 import
- * math/random/json/datetime/socket/ctypes/_ssl/_sqlite3 等 C 扩展。
+ * 运行时约束：libpython3.13.so、libpybridge.so 以及依赖库（libssl_python.so /
+ * libcrypto_python.so / libsqlite3_python.so）都放 jniLibs/arm64-v8a，由 Android
+ * linker 自动解析。Python C 扩展（math.cpython-...so 等）不满足 PackageManager
+ * 的 lib<name>.so 规则，由 NativeEngine 首启从 APK 抽到
+ * python-stdlib/lib/python3.13/lib-dynload，再随标准库加入 sys.path。
+ * 初始化时把 nativeLibraryDir insert 进 sys.path，CPython 即可加载依赖库；
+ * 纯 Python 扩展（math/random/json/datetime/socket/ctypes/_ssl/_sqlite3 等）
+ * 从 lib-dynload 读取。
  */
 #include <jni.h>
 #include <Python.h>
@@ -49,6 +52,67 @@ static char g_crash_log_path[PATH_MAX] = {0};
 /* P2-6：inittab 只允许注册一次（Py_Initialize 后再 AppendInittab 会报错）。 */
 static int g_dtbridge_registered = 0;
 
+
+/* P1-4：Python 字符串是 UTF-8，JNI NewStringUTF 只接受 modified UTF-8，
+ * emoji / 4 字节字符会触发 JNI 异常并让输出变成乱码。统一走 UTF-16：
+ * PyUnicode_AsUTF16String 产出带 BOM 的 UTF-16LE，NewString 会复制 jchar 数组。 */
+static jstring cp_new_string(JNIEnv *env, const char *utf8) {
+    if (!utf8) return NULL;
+    PyObject *u = PyUnicode_DecodeUTF8(utf8, strlen(utf8), "replace");
+    if (!u) { PyErr_Clear(); return (*env)->NewStringUTF(env, utf8); }
+    PyObject *b = PyUnicode_AsUTF16String(u);
+    Py_DECREF(u);
+    if (!b) { PyErr_Clear(); return (*env)->NewStringUTF(env, utf8); }
+    Py_ssize_t n = PyBytes_GET_SIZE(b);
+    jstring out = NULL;
+    if (n >= 2) {
+        out = (*env)->NewString(env, (const jchar *)(PyBytes_AS_STRING(b) + 2),
+                                (jsize)((n - 2) / 2));
+    }
+    Py_DECREF(b);
+    return out;
+}
+
+
+/* P2：把 Python 异常格式化成完整 traceback（含文件名/行号/调用栈）。
+ * 只返回 PyObject（新引用），由调用方转 jstring 并 DECREF。 */
+static PyObject *cp_format_exception(PyObject *ptype, PyObject *pvalue, PyObject *ptb) {
+    PyObject *mod = PyImport_ImportModule("traceback");
+    if (!mod) { PyErr_Clear(); return NULL; }
+    PyObject *fn = PyObject_GetAttrString(mod, "format_exception");
+    Py_DECREF(mod);
+    if (!fn) { PyErr_Clear(); return NULL; }
+    PyObject *list = PyObject_CallFunctionObjArgs(fn, ptype, pvalue, ptb ? ptb : Py_None, NULL);
+    Py_DECREF(fn);
+    if (!list) { PyErr_Clear(); return NULL; }
+    PyObject *sep = PyUnicode_FromString("");
+    PyObject *joined = sep ? PyUnicode_Join(sep, list) : NULL;
+    Py_XDECREF(sep);
+    Py_DECREF(list);
+    if (!joined) { PyErr_Clear(); return NULL; }
+    return joined;
+}
+/* P1-5：每次运行后清掉用户脚本新增的模块与 sys.path 改动。
+ * 基线在 initialize 末尾抓取，存于 __main__；脚本自身不共享该 dict，
+ * 但 PyRun_SimpleString 的清理代码运行在 __main__，可直接读到。 */
+static void cp_reset_after_run(void) {
+    PyObject *main = PyImport_AddModule("__main__"); /* borrowed */
+    if (!main) { PyErr_Clear(); return; }
+    PyObject *d = PyModule_GetDict(main);
+    if (!d || !PyDict_GetItemString(d, "_CP_BASELINE_MODULES")) {
+        PyErr_Clear();
+        return;
+    }
+    PyRun_SimpleString(
+        "import sys as _cp_sys\n"
+        "for _cp_name in list(_cp_sys.modules):\n"
+        "    if _cp_name not in _CP_BASELINE_MODULES:\n"
+        "        del _cp_sys.modules[_cp_name]\n"
+        "_cp_sys.path[:] = _CP_BASELINE_PATH\n"
+    );
+    PyErr_Clear();
+}
+
 /* ---------------- Python 侧桥接函数 ---------------- */
 
 static PyObject *bridge_output(PyObject *self, PyObject *args) {
@@ -64,8 +128,8 @@ static PyObject *bridge_output(PyObject *self, PyObject *args) {
             }
         }
         if (env) {
-            jstring jStream = (*env)->NewStringUTF(env, stream);
-            jstring jText = (*env)->NewStringUTF(env, text);
+            jstring jStream = cp_new_string(env, stream);
+            jstring jText = cp_new_string(env, text);
             (*env)->CallVoidMethod(env, g_ctx.bridge, g_ctx.onOutput, jStream, jText);
             (*env)->DeleteLocalRef(env, jStream);
             (*env)->DeleteLocalRef(env, jText);
@@ -95,16 +159,19 @@ static PyObject *bridge_input(PyObject *self, PyObject *args) {
     }
     /* 阻塞等待 Kotlin 侧返回一行输入（内部用协程 + 输入队列） */
     jstring line = (jstring)(*env)->CallObjectMethod(env, g_ctx.bridge, g_ctx.onInputLine);
-    if (needDetach) (*g_ctx.jvm)->DetachCurrentThread(g_ctx.jvm);
     if (line == NULL) {
         /* Kotlin 侧 pushEof()：Python 层表现为 EOFError */
         PyErr_SetString(PyExc_EOFError, "EOF when reading a line");
+        if (needDetach) (*g_ctx.jvm)->DetachCurrentThread(g_ctx.jvm);
         return NULL;
     }
+    /* 必须先 GetStringUTFChars 再 Detach：JNIEnv 在 Detach 后失效，
+     * 提前 detach 再使用 env/line 是另一个 native 野指针。 */
     const char *utf = (*env)->GetStringUTFChars(env, line, NULL);
     PyObject *result = PyUnicode_FromString(utf ? utf : "");
-    (*env)->ReleaseStringUTFChars(env, line, utf);
+    if (utf) (*env)->ReleaseStringUTFChars(env, line, utf);
     (*env)->DeleteLocalRef(env, line);
+    if (needDetach) (*g_ctx.jvm)->DetachCurrentThread(g_ctx.jvm);
     return result;
 }
 
@@ -238,7 +305,8 @@ Java_com_devterminal_engine_NativeBridge_detach(JNIEnv *env, jobject thiz)
 
 /* 初始化解释器：必须在持有 GIL 的线程调用（专用 Python 线程）
  * stdlibPath  : files/python-stdlib（PYTHONHOME/PYTHONPATH）
- * nativeLibDir: context.applicationInfo.nativeLibraryDir（C 扩展 .so 所在目录）
+ * nativeLibDir: context.applicationInfo.nativeLibraryDir（依赖库 .so 所在目录；
+ *               Python C 扩展在 python-stdlib/lib/python3.13/lib-dynload）
  * crashLogPath: files/crash-native.log（native crash 日志） */
 JNIEXPORT jboolean JNICALL
 Java_com_devterminal_engine_NativeBridge_initialize(
@@ -253,7 +321,8 @@ Java_com_devterminal_engine_NativeBridge_initialize(
         /* 让标准库从 APK 解压目录加载：/data/user/0/.../files/python-stdlib */
         setenv("PYTHONHOME", sp, 1);
         setenv("PYTHONPATH", sp, 1);
-        (*env)->ReleaseStringUTFChars(env, stdlibPath, sp);
+        /* 不能在这里 Release：后面拼 lib-dynload/site-packages 路径还要用 sp。
+         * 提前释放会造成 JNI 字符串野指针，是初始化阶段随机闪退的根因之一。 */
     }
 
     /* 记录 native crash 日志路径 */
@@ -281,8 +350,8 @@ Java_com_devterminal_engine_NativeBridge_initialize(
         return JNI_FALSE;
     }
 
-    /* 注入 nativeLibDir 到 sys.path：CPython 据此在 jniLibs 解压目录找到
-     * math/_random/_json/_datetime/_socket/_ctypes/_ssl/_sqlite3 等 C 扩展。
+    /* 注入 nativeLibDir 到 sys.path：依赖库（libpython/libssl 等）从此加载；
+     * C 扩展本体在 stdlib/lib/python3.13/lib-dynload（NativeEngine 首启从 APK 抽出）。
      * 同时把 site-packages 加进 sys.path（P2-4）。路径均为 Android 文件系统路径，
      * 不含引号/反斜杠，无需转义。 */
     const char *nld = nativeLibDir ? (*env)->GetStringUTFChars(env, nativeLibDir, NULL) : NULL;
@@ -300,9 +369,12 @@ Java_com_devterminal_engine_NativeBridge_initialize(
         snprintf(spInject, sizeof(spInject),
                  "import sys, os\n"
                  "_sp = os.path.join('%s', 'lib', 'python3.13', 'site-packages')\n"
+                 "_dyn = os.path.join('%s', 'lib', 'python3.13', 'lib-dynload')\n"
+                 "if os.path.isdir(_dyn): sys.path.insert(0, _dyn)\n"
                  "if os.path.isdir(_sp): sys.path.append(_sp)\n",
-                 sp);
+                 sp, sp);
         PyRun_SimpleString(spInject);
+        (*env)->ReleaseStringUTFChars(env, stdlibPath, sp);
     }
 
     /* 挂载自定义 stdin/stdout/stderr（纯 Python，不碰 C 层）
@@ -357,6 +429,8 @@ Java_com_devterminal_engine_NativeBridge_initialize(
         "sys.stdout.flush()\n"
         "import os as _os, sys as _sys\n"
         "_sys.argv = ['']\n"
+        "_CP_BASELINE_MODULES = set(_sys.modules)\n"
+        "_CP_BASELINE_PATH = list(_sys.path)\n"
     );
     PyGILState_Release(gil);
     return Py_IsInitialized() ? JNI_TRUE : JNI_FALSE;
@@ -383,7 +457,7 @@ Java_com_devterminal_engine_NativeBridge_execFile(
         if (!fp) {
             char buf[512];
             snprintf(buf, sizeof(buf), "无法打开文件：%s", p);
-            result = (*env)->NewStringUTF(env, buf);
+            result = cp_new_string(env, buf);
         } else {
             /* FILE 模式：保持用户代码的 __file__ / traceback 行号语义 */
             PyObject *globals = PyDict_New();
@@ -463,12 +537,14 @@ Java_com_devterminal_engine_NativeBridge_execFile(
                 PyObject *ptype, *pvalue, *ptb;
                 PyErr_Fetch(&ptype, &pvalue, &ptb);
                 PyErr_NormalizeException(&ptype, &pvalue, &ptb);
-                PyObject *str = PyObject_Str(pvalue);
+                PyObject *str = cp_format_exception(ptype, pvalue, ptb);
+                if (!str) str = PyObject_Str(pvalue); /* 兜底：至少给出异常消息 */
                 const char *msg = str ? PyUnicode_AsUTF8(str) : "Unknown error";
-                result = (*env)->NewStringUTF(env, msg ? msg : "Unknown error");
+                result = cp_new_string(env, msg ? msg : "Unknown error");
                 Py_XDECREF(str);
                 Py_XDECREF(ptype); Py_XDECREF(pvalue); Py_XDECREF(ptb);
             }
+            cp_reset_after_run();
             Py_DECREF(globals);
             fclose(fp);
         }
@@ -497,8 +573,12 @@ Java_com_devterminal_engine_NativeBridge_shutdown(JNIEnv *env, jobject thiz)
 {
     (void)env; (void)thiz;
     if (Py_IsInitialized()) {
-        PyGILState_STATE gil = PyGILState_Ensure();
+        /* Py_FinalizeEx 会销毁当前 thread state；之后不能再 PyGILState_Release，
+         * 否则会访问已释放的 thread state。这里只 Ensure 拿 GIL，让 Finalize 自己收尾。 */
+        PyGILState_Ensure();
         Py_FinalizeEx();
-        PyGILState_Release(gil);
+        /* 允许同一进程内重建解释器：inittab 只对下一次 Py_Initialize 生效，
+         * 若这里不复位，release 后重新 prepare 会因 dtbridge 未注册而初始化失败。 */
+        g_dtbridge_registered = 0;
     }
 }

@@ -1,6 +1,8 @@
 package com.devterminal.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.net.Uri
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -39,13 +41,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.devterminal.BuildConfig
 import com.devterminal.project.Templates
+import com.devterminal.model.ProviderPresets
 import com.devterminal.settings.AppSettings
 import com.devterminal.settings.ThemeModes
+import com.devterminal.engine.CrashLogger
 import com.devterminal.engine.EnvReport
 import com.devterminal.engine.EnvDiagnostics
 import com.devterminal.ui.components.Hairline
@@ -85,12 +92,18 @@ fun SettingsDialog(
     onAutoCloseChange: (Boolean) -> Unit,
     onShowLineNumbersChange: (Boolean) -> Unit,
     onAiConfigChange: (url: String, key: String, model: String) -> Unit,
-    onDismiss: () -> Unit
+    onMcpConfigChange: (enabled: Boolean, endpoint: String) -> Unit,
+    onPluginsEnabledChange: (Boolean) -> Unit,
+    onAgentPlanFirstChange: (Boolean) -> Unit,
+    onDismiss: () -> Unit,
+    onOpenLocalModels: () -> Unit = {},
 ) {
     val cs = MaterialTheme.colorScheme
     var aiUrl by remember { mutableStateOf(settings.aiBaseUrl) }
     var aiKey by remember { mutableStateOf(settings.aiApiKey) }
     var aiModel by remember { mutableStateOf(settings.aiModel) }
+    var mcpEnabled by remember { mutableStateOf(settings.mcpEnabled) }
+    var mcpEndpoint by remember { mutableStateOf(settings.mcpEndpoint) }
 
     QuietDialog(onDismiss = onDismiss, title = "设置") {
         Spacer(Modifier.height(Dimens.xs))
@@ -246,6 +259,36 @@ fun SettingsDialog(
             color = cs.muted
         )
         Spacer(Modifier.height(Dimens.sm))
+        Text(
+            "常用预设（只带端点和模型名，密钥仍需自己填）",
+            style = MaterialTheme.typography.labelSmall,
+            color = cs.muted,
+        )
+        ProviderPresets.all.chunked(3).forEach { rowPresets ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Dimens.xs),
+            ) {
+                rowPresets.forEach { preset ->
+                    TextButton(
+                        onClick = {
+                            aiUrl = preset.baseUrl
+                            aiModel = preset.model
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(
+                            preset.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            color = cs.primary,
+                        )
+                    }
+                }
+                repeat(3 - rowPresets.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
+        Spacer(Modifier.height(Dimens.sm))
         QuietTextField(
             value = aiUrl,
             onValueChange = { aiUrl = it },
@@ -264,8 +307,19 @@ fun SettingsDialog(
             value = aiKey,
             onValueChange = { aiKey = it },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = "API Key（本地端点可留空）"
+            placeholder = "API Key（本地端点可留空）",
+            keyboardType = KeyboardType.Password,
+            visualTransformation = PasswordVisualTransformation()
         )
+        if (settings.encryptionFallback) {
+            Spacer(Modifier.height(Dimens.sm))
+            Text(
+                "⚠️ 当前设备 Keystore 不可用，API Key 与 Git Token 只能以明文保存在应用私有目录。" +
+                    "请勿在共用设备上保存密钥；修复系统安全组件后重新保存即可恢复加密。",
+                style = MaterialTheme.typography.labelSmall,
+                color = cs.error
+            )
+        }
         Spacer(Modifier.height(Dimens.sm))
         TextButton(
             onClick = { onAiConfigChange(aiUrl.trim(), aiKey.trim(), aiModel.trim()) },
@@ -274,6 +328,120 @@ fun SettingsDialog(
             Text("保存 AI 配置", style = MaterialTheme.typography.labelLarge,
                 color = if (aiUrl.isNotBlank()) cs.primary else cs.faint)
         }
+        Spacer(Modifier.height(Dimens.sm))
+        QuietSwitchRow(
+            label = "Agent 先计划后执行",
+            hint = "开启后先列出步骤，等你批准再改文件；对标 Cursor / Claude Code 的 Plan 模式",
+            checked = settings.agentPlanFirst,
+            onChange = onAgentPlanFirstChange,
+        )
+        Spacer(Modifier.height(Dimens.xl))
+        SectionLabel("本地模型")
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "下载 MiniCPM5-1B / 2B 后，Agent 可完全离线运行，不再发网络请求。模型权重不打包进 APK。",
+            style = MaterialTheme.typography.labelSmall,
+            color = cs.muted
+        )
+        Spacer(Modifier.height(Dimens.sm))
+        TextButton(onClick = onOpenLocalModels) { Text("打开本地模型管理") }
+
+        Spacer(Modifier.height(Dimens.xl))
+        SectionLabel("MCP / 项目插件")
+        Spacer(Modifier.height(6.dp))
+        QuietSwitchRow(
+            label = "启用 MCP 工具",
+            hint = "连接 Streamable HTTP MCP 服务，只读工具自动执行，带副作用工具仍需审批",
+            checked = mcpEnabled,
+            onChange = { mcpEnabled = it },
+        )
+        QuietTextField(
+            value = mcpEndpoint,
+            onValueChange = { mcpEndpoint = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = "https://example.com/mcp",
+            mono = true,
+        )
+        Text(
+            "端点可能包含 token，已存入加密偏好；留空则不连接。",
+            style = MaterialTheme.typography.labelSmall,
+            color = cs.muted,
+        )
+        TextButton(
+            onClick = { onMcpConfigChange(mcpEnabled, mcpEndpoint.trim()) },
+            enabled = mcpEndpoint.isBlank() || mcpEndpoint.startsWith("http"),
+        ) { Text("保存 MCP 配置") }
+        Spacer(Modifier.height(Dimens.sm))
+        QuietSwitchRow(
+            label = "启用项目 JS 插件",
+            hint = "执行 .codepocket/plugins 下的 run(input)，沙箱禁止 Java/文件/网络访问",
+            checked = settings.pluginsEnabled,
+            onChange = onPluginsEnabledChange,
+        )
+    }
+}
+
+/** 新手引导：第一次打开 App 时最缺的不是功能，而是「我现在该点哪」。 */
+@Composable
+fun OnboardingDialog(
+    onDismiss: () -> Unit,
+    onNewProject: () -> Unit
+) {
+    val cs = MaterialTheme.colorScheme
+    QuietDialog(
+        onDismiss = onDismiss,
+        title = "先花 1 分钟看懂 CodePocket",
+        confirmLabel = "新建项目",
+        onConfirm = onNewProject,
+        dismissLabel = "先自己逛逛",
+    ) {
+        Text(
+            "CodePocket 是装进口袋的离线代码工作台：编辑、运行、Git、AI/Agent 都在本机完成，不需要云端 IDE。",
+            style = MaterialTheme.typography.bodySmall,
+            color = cs.muted
+        )
+        Spacer(Modifier.height(Dimens.lg))
+
+        SectionLabel("三步开始")
+        Spacer(Modifier.height(6.dp))
+        GuideStep("1", "新建项目", "点「新建项目」选 Python / JavaScript / Lua 模板；已有代码用「导入」。")
+        GuideStep("2", "打开并运行", "左侧文件树点文件，顶栏 ▶ 运行，底部面板看输出。Python 是原生 CPython，JS 是 Rhino，Lua 是 LuaJ。")
+        GuideStep("3", "想用 AI / Agent", "设置里填 OpenAI 兼容端点（BYOK），或下载本地模型；Agent 读写文件前会等你批准。")
+
+        Spacer(Modifier.height(Dimens.lg))
+        SectionLabel("界面在哪")
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "左上角菜单 = 文件树 / 项目 / Git / 自检；顶栏 = 保存 / 命令面板 / 运行；底部 = 输出与输入。",
+            style = MaterialTheme.typography.bodySmall,
+            color = cs.muted
+        )
+
+        Spacer(Modifier.height(Dimens.lg))
+        SectionLabel("如果一运行就退出")
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "先点底部「自检」→「重新检测」。如果仍报解释器 / JNI / C 扩展缺失，说明 APK 的原生库没有解压：卸载旧版，安装最新 APK；还不行就到「关于」复制崩溃日志。",
+            style = MaterialTheme.typography.bodySmall,
+            color = cs.muted
+        )
+    }
+}
+
+@Composable
+private fun GuideStep(number: String, title: String, body: String) {
+    val cs = MaterialTheme.colorScheme
+    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.Top) {
+        Text(
+            number,
+            style = MaterialTheme.typography.labelMedium,
+            color = cs.primary,
+            modifier = Modifier.width(22.dp)
+        )
+        Column {
+            Text(title, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+            Text(body, style = MaterialTheme.typography.labelSmall, color = cs.muted)
+        }
     }
 }
 
@@ -281,20 +449,22 @@ fun SettingsDialog(
 @Composable
 fun AboutDialog(onDismiss: () -> Unit) {
     val cs = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    var crashLog by remember { mutableStateOf(CrashLogger.readAll(context)) }
     QuietDialog(onDismiss = onDismiss, title = "关于") {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Outlined.Terminal, null, tint = cs.primary, modifier = Modifier.size(22.dp))
             Spacer(Modifier.width(Dimens.sm))
             Column {
-                Text("DevTerminal", style = MaterialTheme.typography.titleSmall,
+                Text("CodePocket", style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold)
                 MonoText("版本 ${BuildConfig.VERSION_NAME}", color = cs.muted, fontSize = 10)
             }
         }
         Spacer(Modifier.height(Dimens.md))
         Text(
-            "完全离线的安卓编程终端。内置原生 CPython 3.13.9（PEP 738, arm64-v8a），" +
-                "装好即用，无需联网即可编写、运行 Python 代码。",
+            "完全离线的安卓多语言 IDE。Python 由原生 CPython 执行，" +
+                "JavaScript 由 Rhino、Lua 由 LuaJ 执行；另有 17 种语言支持编辑、语法高亮与补全。",
             style = MaterialTheme.typography.bodySmall,
             color = cs.muted
         )
@@ -304,7 +474,8 @@ fun AboutDialog(onDismiss: () -> Unit) {
         listOf(
             "SoraEditor — LGPL-2.1（代码编辑器）",
             "Python 3.13 — PSF License",
-            "NativeEngine — MIT",
+            "Rhino — MPL-2.0（JavaScript 运行时）",
+            "LuaJ — MIT（Lua 运行时）",
             "Jetpack Compose — Apache-2.0",
             "AndroidX — Apache-2.0"
         ).forEach {
@@ -313,21 +484,35 @@ fun AboutDialog(onDismiss: () -> Unit) {
         }
         Spacer(Modifier.height(Dimens.md))
         Text(
-            "离线 Python 能力由原生 CPython 3.13.9 提供，遵循 PSF 许可；" +
+            "Python 能力由原生 CPython 3.13.9 提供，遵循 PSF 许可；" +
                 "SoraEditor 以 LGPL 授权，用户可自行替换该库。",
             style = MaterialTheme.typography.labelSmall,
             color = cs.faint
         )
+        if (crashLog.isNotBlank()) {
+            Spacer(Modifier.height(Dimens.xl))
+            SectionLabel("最近崩溃日志")
+            Spacer(Modifier.height(Dimens.sm))
+            MonoText(crashLog.takeLast(900), color = cs.muted, fontSize = 9)
+            Row(horizontalArrangement = Arrangement.spacedBy(Dimens.sm)) {
+                TextButton(onClick = {
+                    context.getSystemService(ClipboardManager::class.java)
+                        ?.setPrimaryClip(ClipData.newPlainText("CodePocket crash", crashLog))
+                }) { Text("复制日志", style = MaterialTheme.typography.labelMedium) }
+                TextButton(onClick = {
+                    CrashLogger.clear(context)
+                    crashLog = ""
+                }) { Text("清空", style = MaterialTheme.typography.labelMedium, color = cs.error) }
+            }
+        }
     }
 }
 
-/** 运行配置：命令行参数 + Java 主类 */
+/** 运行配置：只保留命令行参数；语言差异由 LanguageRegistry 处理 */
 @Composable
 fun RunConfigDialog(
     args: String,
-    mainClass: String,
     onArgsChange: (String) -> Unit,
-    onMainClassChange: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
@@ -339,22 +524,6 @@ fun RunConfigDialog(
             onValueChange = onArgsChange,
             modifier = Modifier.fillMaxWidth(),
             placeholder = "如: --name \"hello world\" -v"
-        )
-        Spacer(Modifier.height(Dimens.lg))
-        SectionLabel("Java 主类（暂未支持）")
-        Spacer(Modifier.height(Dimens.sm))
-        QuietTextField(
-            value = mainClass,
-            onValueChange = onMainClassChange,
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = "如: com.example.Main",
-            enabled = false
-        )
-        Spacer(Modifier.height(Dimens.sm))
-        Text(
-            "当前引擎仅执行 Python；Java 运行能力后续开放，此项暂不生效。",
-            style = MaterialTheme.typography.labelSmall,
-            color = cs.faint
         )
         Spacer(Modifier.height(Dimens.md))
         Text(
@@ -370,7 +539,8 @@ fun RunConfigDialog(
 fun DiagnosticsDialog(
     diagnostics: EnvReport?,
     onRefresh: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onOpenGuide: () -> Unit = {}
 ) {
     val cs = MaterialTheme.colorScheme
     QuietDialog(
@@ -387,10 +557,15 @@ fun DiagnosticsDialog(
             }
         } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusDot(if (diagnostics.prefixReady) cs.primary else cs.error)
+                val allOk = diagnostics.allCriticalAvailable
+                StatusDot(if (allOk) cs.primary else cs.error)
                 Spacer(Modifier.width(Dimens.sm))
                 Text(
-                    if (diagnostics.prefixReady) "工具链已安装" else "工具链缺失",
+                    when {
+                        allOk -> "工具链已安装"
+                        !diagnostics.prefixReady -> "工具链缺失"
+                        else -> "工具链已安装 · 部分能力缺失"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium
                 )
@@ -421,6 +596,17 @@ fun DiagnosticsDialog(
                         Text(t.name, style = MaterialTheme.typography.bodySmall)
                         MonoText(t.detail, color = cs.faint, fontSize = 10)
                     }
+                }
+            }
+            if (!diagnostics.allCriticalAvailable) {
+                Spacer(Modifier.height(Dimens.md))
+                Text(
+                    "如果是刚安装的 APK，先点「重新检测」；仍缺失就卸载旧版、安装最新 APK，再到「指南」按步骤排查。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.muted
+                )
+                TextButton(onClick = onOpenGuide) {
+                    Text("查看使用指南", style = MaterialTheme.typography.labelMedium, color = cs.primary)
                 }
             }
         }
@@ -502,13 +688,19 @@ fun FileActionDialog(
     }
 }
 
-/** 新建文件：输入文件名 */
+/** 新建文件 / 文件夹共用的命名输入；两个入口只差标题、占位符和提示。 */
 @Composable
-fun NewFileDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+fun NameInputDialog(
+    title: String,
+    placeholder: String,
+    hint: String? = null,
+    onDismiss: () -> Unit,
+    onCreate: (String) -> Unit
+) {
     var name by remember { mutableStateOf("") }
     QuietDialog(
         onDismiss = onDismiss,
-        title = "新建文件",
+        title = title,
         confirmLabel = if (name.isNotBlank()) "创建" else null,
         onConfirm = if (name.isNotBlank()) { { onCreate(name.trim()) } } else null
     ) {
@@ -516,34 +708,40 @@ fun NewFileDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
             value = name,
             onValueChange = { name = it },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = "如: main.py"
+            placeholder = placeholder
         )
-        Spacer(Modifier.height(Dimens.sm))
-        Text(
-            "文件创建在当前项目根目录，创建后自动打开。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.muted
-        )
+        if (hint != null) {
+            Spacer(Modifier.height(Dimens.sm))
+            Text(
+                hint,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.muted
+            )
+        }
     }
+}
+
+/** 新建文件：输入文件名 */
+@Composable
+fun NewFileDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
+    NameInputDialog(
+        title = "新建文件",
+        placeholder = "如: main.py / app.js / main.lua",
+        hint = "文件创建在当前项目根目录，创建后自动打开。",
+        onDismiss = onDismiss,
+        onCreate = onCreate
+    )
 }
 
 /** 新建文件夹：输入文件夹名 */
 @Composable
 fun NewFolderDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    QuietDialog(
-        onDismiss = onDismiss,
+    NameInputDialog(
         title = "新建文件夹",
-        confirmLabel = if (name.isNotBlank()) "创建" else null,
-        onConfirm = if (name.isNotBlank()) { { onCreate(name.trim()) } } else null
-    ) {
-        QuietTextField(
-            value = name,
-            onValueChange = { name = it },
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = "如: utils"
-        )
-    }
+        placeholder = "如: utils",
+        onDismiss = onDismiss,
+        onCreate = onCreate
+    )
 }
 
 /** 切换项目：列出所有已有项目，点一个就切过去；底部可新建项目 */
@@ -649,13 +847,13 @@ private data class BuiltinLibs(
 
 private fun scanBuiltin(context: android.content.Context): BuiltinLibs {
     val extensions = runCatching {
-        File(context.applicationInfo.nativeLibraryDir).listFiles()
-            ?.filter { it.name.startsWith("lib") && it.name.endsWith(".so") }
-            ?.mapNotNull { f ->
-                val m = f.name.removePrefix("lib").removeSuffix(".so")
-                // 引擎本体（libpython3.13 / libpybridge）不算扩展；.so 模块名统一转成 import 名
-                if (m == "python3.13" || m == "pybridge") null else m.replace("_", "_")
-            }?.sorted() ?: emptyList()
+        // C 扩展由 NativeEngine 从 APK 抽到标准库的 lib-dynload；
+        // 文件名是 math.cpython-313-aarch64-linux-android.so，不能拿 lib 前缀去猜模块名。
+        File(context.filesDir, "python-stdlib/lib/python3.13/lib-dynload").listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".so") && it.name.contains(".cpython-") }
+            ?.map { it.name.substringBefore(".cpython-") }
+            ?.filter { it.isNotBlank() }
+            ?.sorted() ?: emptyList()
     }.getOrDefault(emptyList())
     val pure = runCatching {
         // 与引擎实际挂载路径一致（pybridge.c / NativeEngine）：
@@ -684,10 +882,22 @@ private fun importPurePythonPackage(context: android.content.Context, uri: Uri):
         // 解压到引擎实际挂载的 site-packages 目录
         val dest = File(context.filesDir, "python-stdlib/lib/python3.13/site-packages").apply { mkdirs() }
         val eit = zf.entries()
+        var totalBytes = 0L
+        var entryCount = 0
         while (eit.hasMoreElements()) {
             val e = eit.nextElement()
             if (e.isDirectory) continue
-            val f = File(dest, e.name)
+            entryCount++
+            if (entryCount > 5000) return false
+            totalBytes += e.size.coerceAtLeast(0)
+            if (totalBytes > 100L * 1024 * 1024) return false
+            val relative = e.name.replace('\\', '/')
+            if (relative.startsWith("/") || relative.contains("..")) return false
+            val f = File(dest, relative)
+            val root = dest.canonicalFile
+            val rootPrefix = root.path + File.separator
+            val target = f.canonicalFile.path
+            if (target != root.path && !target.startsWith(rootPrefix)) return false
             f.parentFile?.mkdirs()
             zf.getInputStream(e).use { inp -> f.outputStream().use { out -> inp.copyTo(out) } }
         }

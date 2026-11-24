@@ -65,11 +65,25 @@ data class AppSettings(
      * 否则「未配置」引导永远不出现，用户一点 AI 动作就直接发请求然后必然失败。
      */
     val aiConfigured: Boolean = false,
+    // ---------- 本地模型 ----------
+    /** true 时 Agent 优先使用已下载的本地 GGUF，不再发网络请求。 */
+    val useLocalModel: Boolean = false,
+    val localModelId: String = "minicpm5-1b",
+    // ---------- 生态扩展 ----------
+    /** MCP Streamable HTTP 端点；为空表示未配置。 */
+    val mcpEnabled: Boolean = false,
+    val mcpEndpoint: String = "",
+    /** 项目 `.codepocket/plugins` 的 JS 工具，默认关闭。 */
+    val pluginsEnabled: Boolean = false,
+    /** Agent 是否先出计划、等用户批准再执行（对标 Cursor / Claude Code 的 Plan 模式）。 */
+    val agentPlanFirst: Boolean = false,
     // ---------- Git ----------
     val gitUserName: String = "",
     val gitUserEmail: String = "",
     /** 敏感：远程地址可能内嵌 token（https://user:token@host/repo.git），存加密 SharedPreferences */
-    val gitRemoteUrl: String = ""
+    val gitRemoteUrl: String = "",
+    /** Keystore 不可用时敏感字段退回明文 prefs；设置页需明确提示，不能假装已加密 */
+    val encryptionFallback: Boolean = false
 ) {
     companion object {
         const val DEFAULT_AI_BASE_URL = "http://127.0.0.1:11434/v1"
@@ -102,9 +116,11 @@ class SettingsStore(context: Context) {
      */
     private val encrypted: SharedPreferences = createEncrypted(appContext)
     private val encryptedIsFallback: Boolean get() = encrypted === prefs
+    @Volatile
+    private var encryptedReadFailed = false
 
     init {
-        migrateSensitiveFromPlaintext()
+        runCatching { migrateSensitiveFromPlaintext() }
     }
 
     private fun createEncrypted(context: Context): SharedPreferences = runCatching {
@@ -138,7 +154,11 @@ class SettingsStore(context: Context) {
         }
     }
 
-    fun load(): AppSettings = AppSettings(
+    fun load(): AppSettings = runCatching { readSettings() }.getOrElse {
+        AppSettings(encryptionFallback = true)
+    }
+
+    private fun readSettings(): AppSettings = AppSettings(
         themeMode = prefs.getString(KEY_THEME_MODE, null) ?: legacyThemeMode(),
         editorFontSize = prefs.getInt(KEY_FONT, 14),
         autoSave = prefs.getBoolean(KEY_AUTOSAVE, true),
@@ -150,14 +170,29 @@ class SettingsStore(context: Context) {
         showLineNumbers = prefs.getBoolean(KEY_LINE_NUMBERS, true),
         aiBaseUrl = prefs.getString(KEY_AI_URL, AppSettings.DEFAULT_AI_BASE_URL)
             ?: AppSettings.DEFAULT_AI_BASE_URL,
-        aiApiKey = encrypted.getString(KEY_AI_KEY, "") ?: "",
+        aiApiKey = readEncrypted(KEY_AI_KEY, ""),
         aiModel = prefs.getString(KEY_AI_MODEL, AppSettings.DEFAULT_AI_MODEL)
             ?: AppSettings.DEFAULT_AI_MODEL,
         aiConfigured = prefs.getBoolean(KEY_AI_CONFIGURED, false),
+        useLocalModel = prefs.getBoolean(KEY_USE_LOCAL_MODEL, false),
+        localModelId = prefs.getString(KEY_LOCAL_MODEL_ID, "minicpm5-1b") ?: "minicpm5-1b",
+        mcpEnabled = prefs.getBoolean(KEY_MCP_ENABLED, false),
+        mcpEndpoint = readEncrypted(KEY_MCP_ENDPOINT, ""),
+        pluginsEnabled = prefs.getBoolean(KEY_PLUGINS_ENABLED, false),
+        agentPlanFirst = prefs.getBoolean(KEY_AGENT_PLAN_FIRST, false),
         gitUserName = prefs.getString(KEY_GIT_NAME, "") ?: "",
         gitUserEmail = prefs.getString(KEY_GIT_EMAIL, "") ?: "",
-        gitRemoteUrl = encrypted.getString(KEY_GIT_REMOTE, "") ?: ""
+        gitRemoteUrl = readEncrypted(KEY_GIT_REMOTE, ""),
+        encryptionFallback = encryptedIsFallback || encryptedReadFailed
     )
+
+    /** 加密 prefs 损坏（Keystore key 失效 / 文件损坏）时不让整个 App 启动崩溃。 */
+    private fun readEncrypted(key: String, fallback: String): String = runCatching {
+        encrypted.getString(key, fallback) ?: fallback
+    }.getOrElse {
+        encryptedReadFailed = true
+        fallback
+    }
 
     fun save(s: AppSettings) {
         prefs.edit()
@@ -173,14 +208,23 @@ class SettingsStore(context: Context) {
             .putString(KEY_AI_URL, s.aiBaseUrl)
             .putString(KEY_AI_MODEL, s.aiModel)
             .putBoolean(KEY_AI_CONFIGURED, s.aiConfigured)
+            .putBoolean(KEY_USE_LOCAL_MODEL, s.useLocalModel)
+            .putString(KEY_LOCAL_MODEL_ID, s.localModelId)
+            .putBoolean(KEY_MCP_ENABLED, s.mcpEnabled)
+            .putBoolean(KEY_PLUGINS_ENABLED, s.pluginsEnabled)
+            .putBoolean(KEY_AGENT_PLAN_FIRST, s.agentPlanFirst)
             .putString(KEY_GIT_NAME, s.gitUserName)
             .putString(KEY_GIT_EMAIL, s.gitUserEmail)
             .apply()
-        // 敏感字段写加密 prefs
-        encrypted.edit()
-            .putString(KEY_AI_KEY, s.aiApiKey)
-            .putString(KEY_GIT_REMOTE, s.gitRemoteUrl)
-            .apply()
+        // 敏感字段写加密 prefs。Keystore 在极少数 ROM 上可能失效，
+        // 这里必须兜底：写失败最多丢敏感字段，不能让设置页保存动作直接崩溃。
+        runCatching {
+            encrypted.edit()
+                .putString(KEY_AI_KEY, s.aiApiKey)
+                .putString(KEY_GIT_REMOTE, s.gitRemoteUrl)
+                .putString(KEY_MCP_ENDPOINT, s.mcpEndpoint)
+                .apply()
+        }.onFailure { android.util.Log.w("SettingsStore", "敏感设置写入失败", it) }
     }
 
     // ---------- 会话恢复：重启后回到上次的编辑现场 ----------
@@ -246,6 +290,12 @@ class SettingsStore(context: Context) {
         const val KEY_AI_KEY = "ai_api_key"
         const val KEY_AI_MODEL = "ai_model"
         const val KEY_AI_CONFIGURED = "ai_configured"
+        const val KEY_USE_LOCAL_MODEL = "use_local_model"
+        const val KEY_LOCAL_MODEL_ID = "local_model_id"
+        const val KEY_MCP_ENABLED = "mcp_enabled"
+        const val KEY_MCP_ENDPOINT = "mcp_endpoint"
+        const val KEY_PLUGINS_ENABLED = "plugins_enabled"
+        const val KEY_AGENT_PLAN_FIRST = "agent_plan_first"
         const val KEY_GIT_NAME = "git_user_name"
         const val KEY_GIT_EMAIL = "git_user_email"
         const val KEY_GIT_REMOTE = "git_remote_url"

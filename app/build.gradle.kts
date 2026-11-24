@@ -1,3 +1,6 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -5,6 +8,13 @@ plugins {
     // 而是作为独立的 Kotlin 编译器插件引入（K2 编译器）。
     alias(libs.plugins.kotlin.compose)
 }
+
+val keystoreProperties = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.exists()) FileInputStream(file).use { load(it) }
+}
+val hasReleaseKeystore = keystoreProperties.getProperty("storeFile")
+    ?.let { rootProject.file(it).exists() || file(it).exists() } == true
 
 android {
     namespace = "com.devterminal"
@@ -14,11 +24,11 @@ android {
         applicationId = "com.devterminal"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 14
-        versionName = "1.0.0"
+        versionCode = 27
+        versionName = "0.0.27"
         vectorDrawables { useSupportLibrary = true }
-        // 原生 CPython 引擎：只打 arm64（当前覆盖绝大多数 Android 设备）
-        ndk { abiFilters += "arm64-v8a" }
+        // 原生 CPython 引擎：同时打 arm64 与 x86_64（后者用于模拟器/ChromeOS）
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
     // 原生 CPython（PEP 738）：jniLibs 里的 libpython3.13.so / libpybridge.so
@@ -26,11 +36,31 @@ android {
     // 避免构建机下载 CMake 的不确定性
     ndkVersion = "27.3.13750724"
 
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
-            // 演示阶段复用 debug 签名，正式发布请替换为自己的 keystore
-            signingConfig = signingConfigs.getByName("debug")
+            // R8 压缩 DEX：debug 包 95MB 里 classes.dex 约 44MB，release 必须收缩
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            // 有 keystore.properties 时用正式签名；没有时退回 debug，保证 CI/新克隆能构建
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 
@@ -57,7 +87,7 @@ android {
         }
         // ⚠ 关键：python-stdlib.zip 若被 APK 再压缩，运行时解压/读取会失败，
         // 必须原样存储（noCompress）。wasm 资产已随 Pyodide 方案一并移除。
-        jniLibs { useLegacyPackaging = false }
+        jniLibs { useLegacyPackaging = true }
     }
 
     // 让 assets 里的 python-stdlib.zip 原样打包，不被 AAPT 压缩
@@ -104,6 +134,12 @@ dependencies {
     // ===== Markdown 解析：实时预览用（纯 Kotlin，GFM 方言） =====
     implementation(libs.intellij.markdown)
 
+    // ===== 纯 Java 运行时：Rhino (JS) / LuaJ (Lua)，无 native/16KB =====
+    implementation(libs.rhino)
+    implementation(libs.luaj)
+
     // 单元测试：纯 JVM 逻辑（如报错行解析）不依赖 Android 框架，可直接跑
     testImplementation(libs.junit)
+    // Android 的 org.json 在 JVM 单测里是 stub；补一份真实实现给 AgentDecisionParser 测试
+    testImplementation("org.json:json:20240303")
 }

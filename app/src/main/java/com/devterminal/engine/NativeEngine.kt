@@ -1,6 +1,7 @@
 package com.devterminal.engine
 
 import android.content.Context
+import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -10,7 +11,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import java.util.zip.ZipFile
+import kotlinx.coroutines.flow.buffer
 
 /**
  * 原生 Python 引擎（CPython 3.13.9 官方 Android 支持，PEP 738）。
@@ -18,13 +22,14 @@ import java.util.concurrent.atomic.AtomicReference
  * 实现 [RunEngine] 接口，UI 层零改动。
  *
  * 特性：
- * - 原生 ARM64 性能（arm64-v8a）
+ * - 原生 arm64-v8a / x86_64（模拟器、ChromeOS）
  * - 真实文件系统：脚本直接读写 App 私有目录，cwd = 项目目录
  * - stdin/stdout 在 Python 层桥接：input()/print() 天然可用
  * - 中断走 CPython 官方 Py_AddPendingCall：死循环可被 KeyboardInterrupt 终止
  *
  * 标准库存放在 files/python-stdlib（首次运行时从 assets 解压），
- * libpython3.13.so、libpybridge.so 及全部 C 扩展在 jniLibs/arm64-v8a。
+ * libpython3.13.so、libpybridge.so 在 jniLibs/<abi>；Python C 扩展在首次启动时
+ * 从 APK 的 lib/<abi> 抽到 python-stdlib/lib/python3.13/lib-dynload。
  */
 class NativeEngine(private val context: Context) : RunEngine {
 
@@ -57,17 +62,22 @@ class NativeEngine(private val context: Context) : RunEngine {
     /** execFile 是否仍在执行（stop 兜底线程据此判断脚本是否已收尾） */
     private val execActive = AtomicBoolean(false)
 
+    /** 高频输出时 channel 满导致丢弃的行数；运行结束前会明确告诉用户 */
+    private val droppedLines = AtomicLong(0)
+
     // ==================== 初始化 ====================
 
     private val stdlibMarker = ".unpacked_ok"
 
     /** P1-1：解压完整性校验——标记文件 + 关键 stdlib 文件都在才算可用 */
-    private fun stdlibOk(dest: File): Boolean {
-        if (!File(dest, stdlibMarker).exists()) return false
+    private fun hasStdlibFiles(dest: File): Boolean {
         if (!File(dest, "lib/python3.13/os.py").exists()) return false
         if (!File(dest, "lib/python3.13/encodings/__init__.py").exists()) return false
         return true
     }
+
+    private fun stdlibOk(dest: File): Boolean =
+        File(dest, stdlibMarker).exists() && hasStdlibFiles(dest)
 
     private fun ensureStdlib(onProgress: ((Long, Long) -> Unit)? = null): File {
         // 标准库存放在 files/python-stdlib；不存在或校验失败时从 assets/python-stdlib.zip 解压
@@ -113,7 +123,7 @@ class NativeEngine(private val context: Context) : RunEngine {
                 android.util.Log.e("NativeEngine", "stdlib 解压失败", e)
                 throw RuntimeException("Python 标准库解压失败：${e.message}", e)
             }
-            if (!stdlibOk(dest)) {
+            if (!hasStdlibFiles(dest)) {
                 throw RuntimeException("Python 标准库解压后校验失败")
             }
             File(dest, stdlibMarker).createNewFile()
@@ -129,8 +139,19 @@ class NativeEngine(private val context: Context) : RunEngine {
         if (initialized) return true
         synchronized(initLock) {
             if (initialized) return true
-            val stdlib = ensureStdlib(onProgress)
-            // P0-1：传入 nativeLibraryDir（C 扩展 .so 所在）与 crash-native.log 路径
+            val stdlib = try {
+                ensureStdlib(onProgress)
+            } catch (e: Exception) {
+                android.util.Log.e("NativeEngine", "准备 Python 标准库失败", e)
+                return false
+            }
+            // Android PackageManager 只会把 lib<name>.so 解压到 nativeLibraryDir；
+            // CPython 的 C 扩展名是 math.cpython-313-...so，不带 lib 前缀，必须由 App
+            // 自己从 APK 抽到标准库的 lib-dynload 目录，否则 import math/_ssl/_socket
+            // 会全部失败。此步骤失败不让解释器整体罢工——基础 print 仍可用，自检会报红。
+            runCatching { ensureExtensions(stdlib) }
+                .onFailure { android.util.Log.e("NativeEngine", "准备 Python C 扩展失败", it) }
+            // P0-1：传入 nativeLibraryDir（依赖库 .so 所在）与 crash-native.log 路径
             val nativeLibDir = context.applicationInfo.nativeLibraryDir
             val crashLog = File(context.filesDir, "crash-native.log").absolutePath
             val ok = runCatching {
@@ -142,6 +163,70 @@ class NativeEngine(private val context: Context) : RunEngine {
             readyFlag.set(ok)
             return ok
         }
+    }
+
+    /**
+     * 把 APK 里 lib/<当前 ABI> 下的 Python C 扩展抽到
+     * python-stdlib/lib/python3.13/lib-dynload。
+     *
+     * 这些文件名形如 math.cpython-313-aarch64-linux-android.so，不满足 Android
+     * PackageManager 的 lib&lt;name&gt;.so 规则，安装时不会被解压到 nativeLibraryDir。
+     * 依赖库（libpython3.13.so / libssl_python.so 等）仍由 PackageManager 解压，
+     * dlopen 时会从 nativeLibraryDir 正常解析。
+     */
+    private fun ensureExtensions(stdlib: File): File {
+        val dest = File(stdlib, "lib/python3.13/lib-dynload")
+        val abi = Build.SUPPORTED_ABIS.firstOrNull { it == "arm64-v8a" || it == "x86_64" }
+            ?: Build.SUPPORTED_ABIS.firstOrNull().orEmpty()
+        val abiPrefix = "lib/$abi/"
+        val triple = when (abi) {
+            "arm64-v8a" -> "aarch64-linux-android"
+            "x86_64" -> "x86_64-linux-android"
+            else -> abi
+        }
+        val marker = File(dest, ".extracted_ok")
+        val math = File(dest, "math.cpython-313-$triple.so")
+        val ssl = File(dest, "_ssl.cpython-313-$triple.so")
+        if (marker.isFile && math.isFile && math.length() > 0 &&
+            ssl.isFile && ssl.length() > 0) return dest
+
+        dest.deleteRecursively()
+        dest.mkdirs()
+        val apk = File(context.applicationInfo.sourceDir)
+        if (!apk.isFile) {
+            throw RuntimeException("找不到已安装的 APK：${apk.absolutePath}")
+        }
+        var copied = 0
+        try {
+            ZipFile(apk).use { zf ->
+                val entries = zf.entries()
+                while (entries.hasMoreElements()) {
+                    val e = entries.nextElement()
+                    if (e.isDirectory) continue
+                    if (!e.name.startsWith(abiPrefix)) continue
+                    if (!e.name.endsWith(".so")) continue
+                    val name = e.name.substringAfterLast('/')
+                    // lib<name>.so 已由 PackageManager 解压；这里只抽 Python 扩展
+                    if (name.startsWith("lib")) continue
+                    if (!name.contains(".cpython-")) continue
+                    val target = File(dest, name)
+                    zf.getInputStream(e).use { src ->
+                        target.outputStream().use { dst -> src.copyTo(dst) }
+                    }
+                    copied++
+                }
+            }
+        } catch (e: Exception) {
+            throw RuntimeException("Python C 扩展解压失败：${e.message}", e)
+        }
+        if (copied == 0) {
+            throw RuntimeException("APK 的 lib/$abi 中没有 Python C 扩展")
+        }
+        if (!math.isFile || math.length() <= 0L) {
+            throw RuntimeException("Python C 扩展缺少 math 模块")
+        }
+        marker.createNewFile()
+        return dest
     }
 
     override suspend fun prepareEnvironment(onProgress: (Long, Long) -> Unit) {
@@ -183,7 +268,7 @@ class NativeEngine(private val context: Context) : RunEngine {
         }
         // 首次运行前初始化解释器（预热过则秒过）
         if (!ensureInitialized()) {
-            trySend(RunEvent.Failed("原生 Python 初始化失败，请检查 libpython 是否随 APK 打包"))
+            trySend(RunEvent.Failed("原生 Python 初始化失败，请检查原生库与 C 扩展是否随 APK 安装"))
             busy.set(false); close(); return@callbackFlow
         }
 
@@ -202,7 +287,13 @@ class NativeEngine(private val context: Context) : RunEngine {
 
         // 事件出口（C 回调线程 → Flow）。注意这里只做转发；
         // busy/running 的复位统一交给 exec 线程的 finally 收尾（见下）。
-        sink.set { ev -> trySend(ev) }
+        droppedLines.set(0)
+        sink.set { ev ->
+            val result = trySend(ev)
+            if (result.isFailure && (ev is RunEvent.Stdout || ev is RunEvent.Stderr)) {
+                droppedLines.incrementAndGet()
+            }
+        }
 
         /**
          * Finished 只发一次：看门狗超时补发、stop 兜底与 execFile 正常返回都可能触发，
@@ -222,6 +313,10 @@ class NativeEngine(private val context: Context) : RunEngine {
                 val err = bridge.execFile(script.absolutePath, workingDir, scriptDir, request.args.toTypedArray())
                 // P2-1：无尾换行的最后一行残留在此 flush
                 bridge.flushBuffers()
+                val dropped = droppedLines.get()
+                if (dropped > 0) {
+                    trySend(RunEvent.Log("输出过快，已丢弃 $dropped 行；请减少 print 频率或分批输出"))
+                }
                 if (err != null) {
                     sink.get()?.invoke(RunEvent.Stderr(err))
                     sendFinished(1, started)
@@ -268,7 +363,7 @@ class NativeEngine(private val context: Context) : RunEngine {
             // 保证"上一个脚本真正结束"之前不允许下一个运行开始。
             watchdog.cancel()
         }
-    }.flowOn(Dispatchers.Default)
+    }.buffer(1024).flowOn(Dispatchers.Default)
 
     override fun stop() {
         // P4-2：不再把 running 置 false 就完事——running 的复位统一交给
@@ -301,12 +396,12 @@ class NativeEngine(private val context: Context) : RunEngine {
     }
 
     override fun release() {
-        if (initialized) {
-            runCatching { bridge.shutdown() }
-            runCatching { bridge.detach() }
-            initialized = false
-            readyFlag.set(false)
-        }
+        // 即使 initialized=false 也要 shutdown：initialize 可能在 Py_Initialize 之后、
+        // 返回失败之前就退出，留下一个未关闭的解释器；下一次重建会踩到它。
+        runCatching { bridge.shutdown() }
+        runCatching { bridge.detach() }
+        initialized = false
+        readyFlag.set(false)
         // P3-3：复位静态 sink，避免重建引擎时 C 回调串到旧实例
         NativeEngine.unbind()
     }

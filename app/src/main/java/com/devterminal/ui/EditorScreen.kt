@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.outlined.MenuOpen
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.FileDownload
@@ -95,7 +96,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.devterminal.BuildConfig
-import com.devterminal.engine.Language
+import com.devterminal.engine.LanguageRegistry
 import com.devterminal.project.Templates
 import com.devterminal.ui.components.ActionTile
 import com.devterminal.ui.components.rememberHaptics
@@ -138,11 +139,17 @@ private val overlaySaver = run {
         Named("newProject", Overlay.NewProject),
         Named("git", Overlay.Git),
         Named("ai", Overlay.Ai),
+        Named("agent", Overlay.Agent),
         Named("globalSearch", Overlay.GlobalSearch),
+        Named("symbols", Overlay.Symbols),
+        Named("localModels", Overlay.LocalModels),
+        Named("agentHistory", Overlay.AgentHistory),
+        Named("terminal", Overlay.Terminal),
         Named("diagnostics", Overlay.Diagnostics),
         Named("runConfig", Overlay.RunConfig),
         Named("settings", Overlay.Settings),
         Named("about", Overlay.About),
+        Named("onboarding", Overlay.Onboarding),
     )
     mapSaver(
         save = { o ->
@@ -179,6 +186,7 @@ private val scrollToLineSaver = run {
 @Composable
 fun EditorScreen(vm: EditorViewModel) {
     val ui by vm.ui.collectAsStateWithLifecycle()
+    val currentSpec = LanguageRegistry.forFile(ui.currentFile)
     val cs = MaterialTheme.colorScheme
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -225,14 +233,14 @@ fun EditorScreen(vm: EditorViewModel) {
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { /* 无论授予与否都不再追问 */ }
-    val notifPrefs = remember {
+    val uiPrefs = remember {
         context.getSharedPreferences("devterminal_ui", android.content.Context.MODE_PRIVATE)
     }
     LaunchedEffect(ui.envState) {
         if (ui.envState == EnvState.READY && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
-            && !notifPrefs.getBoolean("notif_asked", false)
+            && !uiPrefs.getBoolean("notif_asked", false)
         ) {
-            notifPrefs.edit().putBoolean("notif_asked", true).apply()
+            uiPrefs.edit().putBoolean("notif_asked", true).apply()
             val r = snackbar.showSnackbar(
                 message = "允许通知，才能在后台保持代码运行",
                 actionLabel = "允许",
@@ -241,6 +249,16 @@ fun EditorScreen(vm: EditorViewModel) {
             if (r == SnackbarResult.ActionPerformed) {
                 notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
+        }
+    }
+
+    // 首次进入且环境就绪时，先给一次「这是什么 / 从哪开始」的说明；
+    // 只在第一次出现，后续可通过抽屉「指南」或命令面板再次打开。
+    LaunchedEffect(ui.envState) {
+        if (ui.envState == EnvState.READY && overlay == Overlay.None &&
+            !uiPrefs.getBoolean("onboarding_seen", false)
+        ) {
+            overlay = Overlay.Onboarding
         }
     }
 
@@ -284,17 +302,21 @@ fun EditorScreen(vm: EditorViewModel) {
     }
 
     // 返回键：按「由内到外」的顺序逐层关闭——
-    // 先收查找条，再收抽屉，最后才是退出 App。原先只处理了前两者。
-    // P1-2：环境准备 / 工具链缺失期间也吞掉返回键，避免冷启动准备中按返回直接退出 App。
+    // 先收查找条，再收抽屉，最后才是退出 App。环境准备期间吞掉返回，
+    // 避免解压到一半退出；工具链缺失页则允许返回退出，别把用户困住。
     BackHandler(
         enabled = ui.findVisible || drawerState.isOpen || overlay != Overlay.None
-            || ui.envState == EnvState.PREPARING || ui.envState == EnvState.ERROR
+            || ui.envState == EnvState.PREPARING
     ) {
         when {
             ui.findVisible -> vm.showFind(false)
             drawerState.isOpen -> scope.launch { drawerState.close() }
+            overlay == Overlay.Onboarding -> {
+                uiPrefs.edit().putBoolean("onboarding_seen", true).apply()
+                closeOverlay()
+            }
             overlay != Overlay.None -> closeOverlay()
-            // PREPARING / ERROR：什么都不做，吞掉返回
+            // PREPARING：什么都不做，吞掉返回，避免解压到一半退出
         }
     }
 
@@ -336,7 +358,7 @@ fun EditorScreen(vm: EditorViewModel) {
                         Spacer(Modifier.width(Dimens.sm))
                         Column(Modifier.weight(1f)) {
                             Text(
-                                "DevTerminal",
+                                "CodePocket",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold
                             )
@@ -406,6 +428,9 @@ fun EditorScreen(vm: EditorViewModel) {
                             ActionTile(Icons.Filled.Settings, "设置",
                                 onClick = { overlay = Overlay.Settings },
                                 modifier = Modifier.weight(1f))
+                            ActionTile(Icons.Outlined.LibraryBooks, "指南",
+                                onClick = { overlay = Overlay.Onboarding },
+                                modifier = Modifier.weight(1f))
                             ActionTile(Icons.Outlined.Info, "关于",
                                 onClick = { overlay = Overlay.About },
                                 modifier = Modifier.weight(1f))
@@ -432,6 +457,22 @@ fun EditorScreen(vm: EditorViewModel) {
                                         .size(6.dp)
                                         .background(cs.secondary, androidx.compose.foundation.shape.CircleShape)
                                 )
+                            }
+                            if (ui.currentFile != null) {
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    currentSpec.displayName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = cs.muted
+                                )
+                                if (!currentSpec.isRunnable) {
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(
+                                        "仅编辑",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = cs.faint
+                                    )
+                                }
                             }
                         }
                     },
@@ -466,11 +507,12 @@ fun EditorScreen(vm: EditorViewModel) {
                                 onClick = { vm.stopRun() }, tint = cs.error
                             )
                         } else {
+                            val canRun = vm.canRun(ui.currentFile)
                             QuietIconButton(
                                 Icons.Filled.PlayArrow, "运行",
                                 onClick = { vm.runCurrent() },
-                                enabled = ui.currentFile != null,
-                                tint = if (ui.currentFile != null) cs.primary else cs.faint,
+                                enabled = canRun,
+                                tint = if (canRun) cs.primary else cs.faint,
                                 size = 24.dp
                             )
                         }
@@ -549,7 +591,8 @@ fun EditorScreen(vm: EditorViewModel) {
                         hasProject = ui.tree != null,
                         onOpenDrawer = { scope.launch { drawerState.open() } },
                         onNewProject = { overlay = Overlay.NewProject },
-                        onImport = { importLauncher.launch(arrayOf("*/*")) }
+                        onImport = { importLauncher.launch(arrayOf("*/*")) },
+                        onGuide = { overlay = Overlay.Onboarding }
                     )
                 } else if (isImageFile(ui.currentFile)) {
                     ImageFileViewer(
@@ -562,8 +605,7 @@ fun EditorScreen(vm: EditorViewModel) {
                     text = ui.editorText,
                     onTextChange = vm::onEditorChanged,
                     fontSize = ui.settings.editorFontSize,
-                    language = if (ui.currentFile?.extension.equals("java", ignoreCase = true))
-                        Language.JAVA else Language.PYTHON,
+                    language = currentSpec,
                     darkTheme = ui.settings.effectiveDarkTheme(),
                     editorTheme = ui.settings.editorTheme,
                     wordWrap = ui.settings.wordWrap,
@@ -734,13 +776,20 @@ fun EditorScreen(vm: EditorViewModel) {
         CommandPalette(
             commands = buildCommands(vm, ui, context,
                 onCommand = { cmd -> when (cmd) {
+                    "terminal" -> { vm.openTerminal(); overlay = Overlay.Terminal }
                     "diag" -> overlay = Overlay.Diagnostics
                     "settings" -> overlay = Overlay.Settings
                     "about" -> overlay = Overlay.About
+                    "guide" -> overlay = Overlay.Onboarding
                     "newproj" -> overlay = Overlay.NewProject
                     "git" -> { overlay = Overlay.Git; vm.refreshGitStatus() }
                     "ai" -> overlay = Overlay.Ai
+                    "agent" -> overlay = Overlay.Agent
                     "gsearch" -> overlay = Overlay.GlobalSearch
+                    "symbols" -> { vm.loadSymbols(); overlay = Overlay.Symbols }
+                    "definition" -> if (vm.findDefinition()) overlay = Overlay.Definitions
+                    "models" -> { vm.refreshLocalModels(); overlay = Overlay.LocalModels }
+                    "agentHistory" -> { vm.loadAgentSessions(); overlay = Overlay.AgentHistory }
                     "runconfig" -> overlay = Overlay.RunConfig
                     "preview" -> vm.togglePreview()
                     "export" -> exportLauncher.launch(vm.suggestedExportName())
@@ -778,17 +827,104 @@ fun EditorScreen(vm: EditorViewModel) {
         AiPanelDialog(
             messages = ui.aiMessages,
             busy = ui.aiBusy,
-            configured = ui.settings.aiConfigured,
+            configured = ui.settings.aiConfigured ||
+                (ui.settings.useLocalModel && ui.localModels.any {
+                    it.spec.id == ui.settings.localModelId && it.installed
+                }),
             inputDraft = ui.aiInputDraft,
             onInputChange = vm::onAiInputChanged,
             onSend = vm::sendAiInput,
             onQuick = vm::aiQuick,
+            onCancel = vm::cancelAi,
             onInsertCode = { code ->
                 // P2-3：把 AI 生成的代码块插入当前编辑器光标处
                 vm.insertSymbol("\n$code\n")
                 closeOverlay()
             },
-            onDismiss = ::closeOverlay
+            onOpenAgent = { overlay = Overlay.Agent },
+            onNewChat = vm::startNewAiChat,
+            onDismiss = { vm.cancelAi(); closeOverlay() }
+        )
+    }
+
+    if (overlay == Overlay.Agent) {
+        AgentPanelDialog(
+            events = ui.agentEvents,
+            busy = ui.agentBusy,
+            configured = ui.settings.aiConfigured ||
+                (ui.settings.useLocalModel && ui.localModels.any {
+                    it.spec.id == ui.settings.localModelId && it.installed
+                }),
+            inputDraft = ui.agentInputDraft,
+            pendingProposal = ui.agentPendingProposal,
+            pendingPlan = ui.agentPendingPlan,
+            planFirst = ui.settings.agentPlanFirst,
+            lastCheckpoint = ui.lastAgentCheckpoint,
+            checkpointCount = ui.agentCheckpoints.size,
+            recovered = ui.agentRecovered,
+            onInputChange = vm::onAgentInputChanged,
+            onSend = vm::sendAgentInput,
+            onApprove = vm::approveAgentPatch,
+            onReject = vm::rejectAgentPatch,
+            onRestoreCheckpoint = vm::restoreAgentCheckpoint,
+            onOpenHistory = { vm.loadAgentSessions(); overlay = Overlay.AgentHistory },
+            onNewSession = vm::startNewAgentSession,
+            onPlanToggle = vm::setAgentPlanFirst,
+            onApprovePlan = vm::approveAgentPlan,
+            onRejectPlan = vm::rejectAgentPlan,
+            onCancel = vm::cancelAgent,
+            onDismiss = { vm.cancelAgent(); closeOverlay() }
+        )
+    }
+
+    if (overlay == Overlay.AgentHistory) {
+        AgentHistoryDialog(
+            sessions = ui.agentSessions,
+            loading = ui.agentSessionsLoading,
+            onOpen = { id ->
+                vm.openAgentSession(id)
+                overlay = Overlay.Agent
+            },
+            onDelete = vm::deleteAgentSession,
+            onDismiss = ::closeOverlay,
+        )
+    }
+
+    if (overlay == Overlay.LocalModels) {
+        LocalModelsDialog(
+            models = ui.localModels,
+            activeId = ui.settings.localModelId,
+            useLocal = ui.settings.useLocalModel,
+            loading = ui.localModelsLoading,
+            onDownload = vm::downloadLocalModel,
+            onCancelDownload = vm::cancelLocalModelDownload,
+            onDelete = vm::deleteLocalModel,
+            onSelect = vm::selectLocalModel,
+            onToggleUse = vm::setUseLocalModel,
+            onDismiss = ::closeOverlay,
+        )
+    }
+
+    if (overlay == Overlay.Symbols) {
+        SymbolOutlineDialog(
+            fileName = ui.currentFile?.name ?: "当前文件",
+            symbols = ui.symbolOutline,
+            loading = ui.symbolsLoading,
+            onPick = { line -> vm.gotoLine(line); closeOverlay() },
+            onDismiss = ::closeOverlay,
+        )
+    }
+
+    if (overlay == Overlay.Definitions) {
+        DefinitionDialog(
+            query = ui.definitionQuery,
+            matches = ui.definitionMatches,
+            loading = ui.definitionLoading,
+            onPick = { definition ->
+                vm.openDefinition(definition)
+                closeOverlay()
+            },
+            onDismiss = ::closeOverlay,
         )
     }
 
@@ -808,16 +944,15 @@ fun EditorScreen(vm: EditorViewModel) {
         DiagnosticsDialog(
             diagnostics = ui.diagnostics,
             onRefresh = { vm.runDiagnostics() },
-            onDismiss = ::closeOverlay
+            onDismiss = ::closeOverlay,
+            onOpenGuide = { closeOverlay(); overlay = Overlay.Onboarding }
         )
     }
 
     if (overlay == Overlay.RunConfig) {
         RunConfigDialog(
             args = ui.runArgs,
-            mainClass = ui.mainClass,
             onArgsChange = vm::onRunArgsChanged,
-            onMainClassChange = vm::onMainClassChanged,
             onDismiss = ::closeOverlay
         )
     }
@@ -829,6 +964,19 @@ fun EditorScreen(vm: EditorViewModel) {
             onRename = { newName -> vm.renameFile(target, newName); closeOverlay() },
             onDelete = { vm.deleteFile(target); closeOverlay() },
             onDismiss = ::closeOverlay
+        )
+    }
+
+    if (overlay == Overlay.Terminal) {
+        TerminalDialog(
+            lines = ui.terminalLines,
+            cwd = ui.terminalCwd,
+            busy = ui.terminalBusy,
+            input = ui.terminalInput,
+            onInputChange = vm::onTerminalInputChanged,
+            onRun = vm::runTerminalCommand,
+            onClear = vm::clearTerminal,
+            onDismiss = { vm.closeTerminal(); closeOverlay() },
         )
     }
 
@@ -856,7 +1004,33 @@ fun EditorScreen(vm: EditorViewModel) {
                     )
                 )
             },
-            onDismiss = ::closeOverlay
+            onMcpConfigChange = { enabled, endpoint ->
+                vm.updateSettings(ui.settings.copy(mcpEnabled = enabled, mcpEndpoint = endpoint))
+            },
+            onAgentPlanFirstChange = vm::setAgentPlanFirst,
+            onPluginsEnabledChange = { enabled ->
+                vm.updateSettings(ui.settings.copy(pluginsEnabled = enabled))
+            },
+            onDismiss = ::closeOverlay,
+            onOpenLocalModels = {
+                closeOverlay()
+                vm.refreshLocalModels()
+                overlay = Overlay.LocalModels
+            },
+        )
+    }
+
+    if (overlay == Overlay.Onboarding) {
+        OnboardingDialog(
+            onDismiss = {
+                uiPrefs.edit().putBoolean("onboarding_seen", true).apply()
+                closeOverlay()
+            },
+            onNewProject = {
+                uiPrefs.edit().putBoolean("onboarding_seen", true).apply()
+                closeOverlay()
+                overlay = Overlay.NewProject
+            },
         )
     }
 
@@ -922,7 +1096,8 @@ private fun EditorEmptyState(
     hasProject: Boolean,
     onOpenDrawer: () -> Unit,
     onNewProject: () -> Unit,
-    onImport: () -> Unit
+    onImport: () -> Unit,
+    onGuide: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
     // 入场动效：内容淡入并轻微上移。
@@ -962,7 +1137,7 @@ private fun EditorEmptyState(
                 if (hasProject) {
                     "从左侧文件树点开任意文件即可编辑，底部面板会显示运行结果"
                 } else {
-                    "原生 CPython 3.13.9 标准库、Git 都已内置，离线随时随地跑代码"
+                    "Python / JavaScript / Lua 可运行，另有 17 种语言可编辑；标准库与 Git 都已内置"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = cs.muted,
@@ -983,6 +1158,14 @@ private fun EditorEmptyState(
                         color = cs.muted
                     )
                 }
+            }
+            Spacer(Modifier.height(Dimens.sm))
+            TextButton(onClick = onGuide) {
+                Text(
+                    "先看 1 分钟使用指南",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = cs.primary
+                )
             }
         }
     }
@@ -1064,6 +1247,7 @@ private fun MissingToolchainScreen(
     onRetry: () -> Unit
 ) {
     val cs = MaterialTheme.colorScheme
+    val context = LocalContext.current
     Box(
         Modifier
             .fillMaxSize()
@@ -1075,17 +1259,17 @@ private fun MissingToolchainScreen(
             Text(message, style = MaterialTheme.typography.titleMedium, color = cs.error)
             Spacer(Modifier.height(Dimens.md))
             Text(
-                "DevTerminal 的原生 CPython 3.13.9（PEP 738, arm64-v8a）随 APK 打包，装完即离线、无需任何下载。",
+                "这不是你的代码问题：CodePocket 的 Python 运行时没有从安装包里解压出来。JavaScript/Lua 是纯 Java，不受影响。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = cs.muted
             )
             Spacer(Modifier.height(Dimens.xl))
-            SectionLabel("修复步骤")
+            SectionLabel("先这样做")
             Spacer(Modifier.height(Dimens.sm))
             listOf(
-                "1. 确认 assets/python-stdlib.zip 已随 APK 打包",
-                "2. 确认 lib/arm64-v8a/libpython3.13.so 已随 APK 打包",
-                "3. 重新构建并安装 APK"
+                "1. 点下面的「重新检测」，多数情况会恢复",
+                "2. 仍失败：卸载旧版，安装最新 APK（不要只覆盖更新）",
+                "3. 还不行：到「关于」复制崩溃日志反馈，日志里会记录缺失的 .so"
             ).forEach { step ->
                 MonoText(
                     step,
@@ -1100,7 +1284,17 @@ private fun MissingToolchainScreen(
             }
             Spacer(Modifier.height(Dimens.xl))
             androidx.compose.material3.TextButton(onClick = onRetry) {
-                Text("重试", style = MaterialTheme.typography.labelLarge, color = cs.primary)
+                Text("重新检测", style = MaterialTheme.typography.labelLarge, color = cs.primary)
+            }
+            androidx.compose.material3.TextButton(onClick = {
+                val ctx = context
+                val log = com.devterminal.engine.CrashLogger.readAll(ctx).ifBlank { "（暂无崩溃日志）" }
+                val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                    as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("CodePocket crash log", log))
+                android.widget.Toast.makeText(ctx, "崩溃日志已复制", android.widget.Toast.LENGTH_SHORT).show()
+            }) {
+                Text("复制崩溃日志", style = MaterialTheme.typography.labelLarge, color = cs.muted)
             }
         }
     }
@@ -1140,7 +1334,11 @@ private fun buildCommands(
         Icons.Filled.AccountTree) { onCommand("git") })
     add(Command("ai", "AI 助手", "解释代码 / 修复报错 / 生成测试",
         Icons.Filled.AutoAwesome) { onCommand("ai") })
-    add(Command("runconfig", "运行配置", "命令行参数 / Java 主类",
+    add(Command("agent", "Agent 模式", "读项目 / 搜索 / 按行改文件 / 批准",
+        Icons.Filled.AutoAwesome) { onCommand("agent") })
+    add(Command("terminal", "终端", "在项目根执行 sh 命令",
+        Icons.Outlined.Terminal) { onCommand("terminal") })
+    add(Command("runconfig", "运行配置", "命令行参数",
         Icons.Outlined.Terminal) { onCommand("runconfig") })
     add(Command("preview", "实时预览", "Markdown / HTML 分屏渲染",
         Icons.Outlined.Preview) { onCommand("preview") })
@@ -1150,6 +1348,14 @@ private fun buildCommands(
         Icons.Filled.FileUpload) { onCommand("export") })
     add(Command("goto", "跳转到行", "输入行号直达",
         Icons.Outlined.NavigateBefore) { onCommand("goto") })
+    add(Command("symbols", "符号大纲", "当前文件的类 / 函数列表",
+        Icons.Filled.AccountTree) { onCommand("symbols") })
+    add(Command("definition", "跳转到定义", "光标下的 Python 符号 / 跨文件",
+        Icons.Filled.Search) { onCommand("definition") })
+    add(Command("models", "本地模型", "下载 MiniCPM5 / 离线 Agent",
+        Icons.Filled.AutoAwesome) { onCommand("models") })
+    add(Command("agentHistory", "Agent 历史会话", "回放之前的工具轨迹",
+        Icons.Filled.AccountTree) { onCommand("agentHistory") })
     add(Command("copyout", "复制全部输出", "写入剪贴板",
         Icons.Filled.ContentCopy) { vm.copyOutput() })
     add(Command("newfile", "新建文件", "在项目根创建",
@@ -1158,19 +1364,28 @@ private fun buildCommands(
         Icons.Filled.CreateNewFolder) { onCommand("newfolder") })
     add(Command("packages", "离线 Python 包", "查看内置库 / 安装 wheel",
         Icons.Outlined.LibraryBooks) { onCommand("packages") })
-    add(Command("diag", "环境自检", "Python / pip / Java / javac / Git",
+    add(Command("diag", "环境自检", "Python / JavaScript / Lua / Git",
         Icons.Outlined.HealthAndSafety) { onCommand("diag") })
     add(Command("settings", "设置", "主题 / 字号 / 超时 / AI 端点",
         Icons.Filled.Settings) { onCommand("settings") })
-    add(Command("about", "关于 DevTerminal", "版本与开源许可",
+    add(Command("guide", "使用指南", "3 分钟上手 / 运行失败排查",
+        Icons.Outlined.LibraryBooks) { onCommand("guide") })
+    add(Command("about", "关于 CodePocket", "版本与开源许可",
         Icons.Outlined.Info) { onCommand("about") })
-    // 代码片段：按当前文件语言过滤，避免 Python 文件里冒出来 Java 片段
-    val currentExt = ui.currentFile?.extension?.lowercase()
-    val snippetLang = when (currentExt) {
-        "java" -> com.devterminal.engine.Language.JAVA
-        else -> com.devterminal.engine.Language.PYTHON
+    ui.customCommands.forEach { cmd ->
+        add(Command(
+            "cmd-${cmd.id}",
+            "命令：${cmd.title}",
+            cmd.description.ifBlank { "项目自定义 Agent 指令" },
+            Icons.Filled.Bolt
+        ) {
+            vm.prefillAgent(cmd.body)
+            onCommand("agent")
+        })
     }
-    com.devterminal.engine.Snippets.forLanguage(snippetLang).forEach { s ->
+    // 代码片段：按当前文件语言过滤，避免 Python 文件里冒出来 Lua 片段
+    val currentSpec = LanguageRegistry.forFile(ui.currentFile)
+    com.devterminal.engine.Snippets.forLanguage(currentSpec.id).forEach { s ->
         add(Command(
             "snip-${s.id}",
             "插入片段：${s.title}",
@@ -1184,14 +1399,11 @@ private fun buildCommands(
 private fun isImageFile(file: File?): Boolean =
     file?.extension?.lowercase() in setOf("png", "jpg", "jpeg", "gif", "webp", "bmp")
 
-/** 简单图片查看器：用 BitmapFactory 解码后填满可用区域 */
+/** 图片查看器：先读 bounds，再按 inSampleSize 降采样，避免大图 OOM。 */
 @Composable
 private fun ImageFileViewer(file: File, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
     val bitmap = remember(file.absolutePath) {
-        runCatching {
-            android.graphics.BitmapFactory.decodeFile(file.absolutePath)
-        }.getOrNull()
+        runCatching { decodeSampledBitmap(file.absolutePath, 1600) }.getOrNull()
     }
     Box(modifier.background(MaterialTheme.colorScheme.background), contentAlignment = Alignment.Center) {
         if (bitmap != null) {
@@ -1205,4 +1417,20 @@ private fun ImageFileViewer(file: File, modifier: Modifier = Modifier) {
             QuietHint("无法解码图片：${file.name}")
         }
     }
+}
+
+/** 只解到 maxDim 以内，兼顾清晰度和内存。 */
+private fun decodeSampledBitmap(path: String, maxDim: Int): android.graphics.Bitmap? {
+    val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    android.graphics.BitmapFactory.decodeFile(path, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    while (bounds.outWidth / sample > maxDim || bounds.outHeight / sample > maxDim) {
+        sample *= 2
+    }
+    val opts = android.graphics.BitmapFactory.Options().apply {
+        inSampleSize = sample
+        inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+    }
+    return android.graphics.BitmapFactory.decodeFile(path, opts)
 }
